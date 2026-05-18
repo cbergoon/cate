@@ -666,6 +666,9 @@ export interface AppSettings {
   // Browser
   browserHomepage: string
   browserSearchEngine: BrowserSearchEngine
+  /** When enabled, http(s) URLs printed in any terminal are auto-opened in a
+   *  reused browser panel within the same workspace. */
+  autoOpenUrlsFromTerminal: boolean
 
   // Sidebar
   sidebarTintOpacity: number
@@ -713,6 +716,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Browser
   browserHomepage: 'about:blank',
   browserSearchEngine: 'google',
+  autoOpenUrlsFromTerminal: false,
 
   // Sidebar
   sidebarTintOpacity: 1.0,
