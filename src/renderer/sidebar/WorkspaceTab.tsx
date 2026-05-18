@@ -1,12 +1,12 @@
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import { useShallow } from 'zustand/shallow'
-import { CaretRight, Terminal as TerminalIcon, Globe, FileCode, GitBranch, Folder, FolderPlus, SquaresFour, List, PencilSimple, DotsThree } from '@phosphor-icons/react'
-import type { WorkspaceState, PanelType, PanelLocation } from '../../shared/types'
+import { CaretRight, Terminal as TerminalIcon, Globe, FileCode, GitBranch, Folder, FolderPlus, SquaresFour, List, DotsThree } from '@phosphor-icons/react'
+import type { WorkspaceState, PanelType, PanelLocation, DockLayoutNode } from '../../shared/types'
 import { ALL_ZONES } from '../../shared/types'
 import { useStatusStore } from '../stores/statusStore'
-import { useAppStore, WORKSPACE_COLORS, getCanvasOperations } from '../stores/appStore'
+import { useAppStore, WORKSPACE_COLORS, getCanvasOperations, getWorkspaceCanvasPanelId, ensureCanvasOpsForPanel } from '../stores/appStore'
 import { useDockStore } from '../stores/dockStore'
-import { useCanvasStore } from '../stores/canvasStore'
+import { getOrCreateCanvasStoreForPanel } from '../stores/canvasStore'
 import { findTabStack, findStackContainingPanel } from '../stores/dockTreeUtils'
 import type { NativeContextMenuItem } from '../../shared/electron-api'
 import { TerminalNotificationInline, useTerminalNotifications } from './TerminalNotificationsButton'
@@ -49,10 +49,75 @@ async function focusWorkspacePanel(workspaceId: string, panelId: string): Promis
       return
     }
 
-    const ops = getCanvasOperations()
+    // Resolve the canvas ops for THIS workspace's canvas panel (not the
+    // global singleton — that may point at a different workspace's store).
+    const canvasPanelId = getWorkspaceCanvasPanelId(workspaceId)
+    const ops = canvasPanelId ? ensureCanvasOpsForPanel(canvasPanelId) : getCanvasOperations()
     const nodeId = ops?.storeApi?.getState()?.nodeForPanel(panelId)
     if (nodeId) { ops!.focusPanelNode(panelId); return }
   }
+}
+
+// Subscribe to every canvas store in a workspace and return the union of
+// panel ids that currently live on those canvases. A workspace can host
+// multiple canvas panels, and the legacy singleton `useCanvasStore` only
+// mirrors whichever canvas mounted first — so we scan ALL canvas panels in
+// the workspace and union their live nodes' dockLayouts.
+function useWorkspaceCanvasPanelIds(workspaceId: string): Set<string> {
+  const canvasPanelIds = useAppStore(useShallow((s) => {
+    const ws = s.workspaces.find((w) => w.id === workspaceId)
+    if (!ws) return [] as string[]
+    return Object.values(ws.panels)
+      .filter((p) => p.type === 'canvas')
+      .map((p) => p.id)
+  }))
+
+  const stores = useMemo(
+    () => canvasPanelIds.map((id) => getOrCreateCanvasStoreForPanel(id)),
+    [canvasPanelIds],
+  )
+
+  const compute = useCallback(() => {
+    const ids = new Set<string>()
+    for (const store of stores) {
+      for (const node of Object.values(store.getState().nodes)) {
+        // Each canvas node has its own mini-dock layout; a node may host
+        // several tabbed panels. `node.panelId` is only the seed — walk the
+        // full layout so additional tabs (e.g. Terminal 2, Terminal 4
+        // dragged into the same canvas node) still classify as canvas
+        // children in the sidebar.
+        collectPanelIdsFromDockLayout(node.dockLayout, ids)
+        if (node.panelId) ids.add(node.panelId)
+      }
+    }
+    return ids
+  }, [stores])
+
+  const [ids, setIds] = useState<Set<string>>(compute)
+
+  useEffect(() => {
+    // Recompute immediately on store-set change so we don't render one frame
+    // of stale ids after switching workspaces.
+    setIds(compute())
+    const unsubs = stores.map((s) => s.subscribe(() => setIds(compute())))
+    return () => {
+      for (const fn of unsubs) fn()
+    }
+  }, [stores, compute])
+
+  return ids
+}
+
+function collectPanelIdsFromDockLayout(
+  layout: DockLayoutNode | null | undefined,
+  out: Set<string>,
+): void {
+  if (!layout) return
+  if (layout.type === 'tabs') {
+    for (const id of layout.panelIds) out.add(id)
+    return
+  }
+  for (const child of layout.children) collectPanelIdsFromDockLayout(child, out)
 }
 
 interface TerminalPanelRowProps {
@@ -80,7 +145,7 @@ const TerminalPanelRow: React.FC<TerminalPanelRowProps> = ({ panel, indent, dot,
   return (
     <button
       className={`group/panel flex items-center gap-1.5 h-7 pr-2 rounded text-[13px] text-muted hover:text-primary hover:bg-hover text-left min-w-0 focus:outline-none ${
-        indent ? 'pl-14' : 'pl-7'
+        indent ? 'pl-10' : 'pl-7'
       }`}
       onClick={handleRowClick}
       title={panel.filePath || panel.url || label}
@@ -156,19 +221,23 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
     return ws?.panels ?? workspace.panels
   }))
 
-  // Set of panelIds living on a canvas (for the selected workspace, use the
-  // live canvasStore; otherwise fall back to the workspace's persisted nodes).
-  const liveCanvasPanelIds = useCanvasStore(useShallow((s) => {
-    const ids = new Set<string>()
-    for (const node of Object.values(s.nodes)) ids.add(node.panelId)
-    return ids
-  }))
+  // Set of panel ids living on this workspace's canvases. Union of:
+  //   (a) live canvas stores (covers the active workspace + any other
+  //       workspace whose canvas was mounted earlier this session — those
+  //       stores stay alive in the registry even after switching away), and
+  //   (b) the workspace's persisted canvasNodes (cold-start fallback before
+  //       any canvas has mounted in this session).
+  // Used regardless of isSelected so active and non-active workspaces apply
+  // the same classification rule.
+  const liveCanvasPanelIds = useWorkspaceCanvasPanelIds(workspace.id)
   const canvasPanelIds = useMemo(() => {
-    if (isSelected) return liveCanvasPanelIds
-    const ids = new Set<string>()
-    for (const node of Object.values(workspace.canvasNodes ?? {})) ids.add(node.panelId)
+    const ids = new Set<string>(liveCanvasPanelIds)
+    for (const node of Object.values(workspace.canvasNodes ?? {})) {
+      collectPanelIdsFromDockLayout(node.dockLayout, ids)
+      if (node.panelId) ids.add(node.panelId)
+    }
     return ids
-  }, [isSelected, liveCanvasPanelIds, workspace.canvasNodes])
+  }, [liveCanvasPanelIds, workspace.canvasNodes])
 
   // Map terminal panel id → agent state for activity dots
   const agentStateByPanel = wsStatus?.agentState ?? {}
@@ -280,11 +349,18 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
     await focusWorkspacePanel(workspace.id, panelId)
   }, [workspace.id])
 
-  const handleRenameClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
+  const beginRename = useCallback(() => {
     setRenameValue(workspace.name || workspace.rootPath?.split('/').pop() || 'Workspace')
     setIsRenaming(true)
   }, [workspace.name, workspace.rootPath])
+
+  const handleTitleClick = useCallback((e: React.MouseEvent) => {
+    // First click selects the workspace (parent handler). Once selected, a
+    // click on the title enters rename mode — replacing the dedicated pencil.
+    if (!isSelected) return
+    e.stopPropagation()
+    beginRename()
+  }, [isSelected, beginRename])
 
   // Empty state: workspace has no folder selected yet — flat row that opens picker
   if (!workspace.rootPath) {
@@ -382,7 +458,7 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
       <button
         key={p.id}
         className={`group/panel flex items-center gap-1.5 h-7 pr-2 rounded text-[13px] text-muted hover:text-primary hover:bg-hover text-left min-w-0 focus:outline-none ${
-          indent ? 'pl-14' : 'pl-7'
+          indent ? 'pl-10' : 'pl-7'
         }`}
         onClick={(e) => handlePanelClick(e, p.id)}
         title={p.filePath || p.url || label}
@@ -454,8 +530,10 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
           />
         ) : (
           <span
-            className="flex-1 min-w-0 text-[14px] truncate"
-            title={workspace.rootPath}
+            className={`flex-1 min-w-0 text-[14px] truncate ${isSelected ? 'cursor-text' : ''}`}
+            title={isSelected ? 'Click to rename' : workspace.rootPath}
+            onClick={handleTitleClick}
+            onDoubleClick={(e) => { e.stopPropagation(); beginRename() }}
           >
             {displayTitle}
           </span>
@@ -468,20 +546,13 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
           </span>
         )}
 
-        {/* Hover actions: dots menu + rename */}
+        {/* Hover actions: dots menu (rename happens via clicking the title) */}
         <button
           className="flex-shrink-0 w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-80 hover:!opacity-100 text-secondary hover:text-primary transition-opacity focus:outline-none"
           onClick={(e) => { e.stopPropagation(); handleContextMenu(e) }}
           title="More actions"
         >
           <DotsThree size={14} weight="bold" />
-        </button>
-        <button
-          className="flex-shrink-0 w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-80 hover:!opacity-100 text-secondary hover:text-primary transition-opacity focus:outline-none"
-          onClick={handleRenameClick}
-          title="Rename"
-        >
-          <PencilSimple size={12} weight="bold" />
         </button>
       </div>
 
