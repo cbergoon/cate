@@ -18,6 +18,7 @@ import { app, type WebContents } from 'electron'
 import { RpcClient } from '@earendil-works/pi-coding-agent'
 import log from '../../main/logger'
 import { getShellEnv } from '../../main/shellEnv'
+import { createNodeShim } from './nodeShim'
 
 // Structural alias for pi-ai's ImageContent — pi-ai doesn't expose a `.` export
 // so we duplicate the minimal shape here. Pi reads `{type, data, mimeType}`.
@@ -79,12 +80,9 @@ function nodeExistsOnPath(env: Record<string, string>): boolean {
 function ensureElectronNodeShim(): string {
   if (fallbackNodeDir) return fallbackNodeDir
   const dir = path.join(app.getPath('temp'), 'cate-node-shim')
-  fs.mkdirSync(dir, { recursive: true })
-  const linkPath = path.join(dir, 'node')
-  try { fs.unlinkSync(linkPath) } catch { /* didn't exist */ }
-  fs.symlinkSync(process.execPath, linkPath)
+  createNodeShim(dir, process.execPath)
+  log.info('[agentManager] created node shim in %s (platform=%s)', dir, process.platform)
   fallbackNodeDir = dir
-  log.info('[agentManager] created node shim at %s -> %s', linkPath, process.execPath)
   return dir
 }
 
