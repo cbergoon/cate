@@ -182,11 +182,6 @@ export interface ExtensionWidgetEntry {
   placement: 'aboveEditor' | 'belowEditor'
 }
 
-export interface ExtensionNotification {
-  id: string
-  message: string
-  notifyType: 'info' | 'warning' | 'error'
-}
 
 // -----------------------------------------------------------------------------
 // Per-panel state
@@ -207,7 +202,7 @@ export interface PanelAgentState {
   followUpQueue: string[]
   extensionStatuses: ExtensionStatusEntry[]
   extensionWidgets: ExtensionWidgetEntry[]
-  extensionNotifications: ExtensionNotification[]
+
   /** Pending dialog requests from pi extensions — rendered as in-panel UI. */
   uiRequests: AgentExtensionUIRequest[]
   /** Optional session display name (mirrors pi's `set_session_name`). */
@@ -254,8 +249,7 @@ interface AgentStoreActions {
     lines: string[] | undefined,
     placement: 'aboveEditor' | 'belowEditor',
   ) => void
-  pushExtensionNotification: (panelId: string, n: Omit<ExtensionNotification, 'id'>) => void
-  dismissExtensionNotification: (panelId: string, id: string) => void
+
   addUiRequest: (panelId: string, req: AgentExtensionUIRequest) => void
   resolveUiRequest: (panelId: string, id: string) => void
 }
@@ -288,7 +282,6 @@ function emptyPanel(): PanelAgentState {
     followUpQueue: [],
     extensionStatuses: [],
     extensionWidgets: [],
-    extensionNotifications: [],
     uiRequests: [],
   }
 }
@@ -485,7 +478,6 @@ export const useAgentStore = create<AgentStore>((set) => ({
         followUpQueue: [],
         extensionStatuses: [],
         extensionWidgets: [],
-        extensionNotifications: [],
         uiRequests: [],
       })),
     )
@@ -574,26 +566,6 @@ export const useAgentStore = create<AgentStore>((set) => ({
     )
   },
 
-  pushExtensionNotification(panelId, n) {
-    set((state) =>
-      withPanel(state, panelId, (p) => ({
-        ...p,
-        extensionNotifications: [
-          ...p.extensionNotifications,
-          { id: nextMsgId(), ...n },
-        ],
-      })),
-    )
-  },
-
-  dismissExtensionNotification(panelId, id) {
-    set((state) =>
-      withPanel(state, panelId, (p) => ({
-        ...p,
-        extensionNotifications: p.extensionNotifications.filter((n) => n.id !== id),
-      })),
-    )
-  },
 
   addUiRequest(panelId, req) {
     set((state) =>
@@ -972,16 +944,9 @@ function handleEvent(panelId: string, event: { type: string; [key: string]: unkn
           ...event,
         }
         // Fire-and-forget methods don't expect a response — render them as
-        // panel chrome (statuses / widgets / notifications / title) instead
-        // of putting them in the dialog queue.
-        if (method === 'notify') {
-          const notifyType = (asString(event.notifyType) as ExtensionNotification['notifyType']) ?? 'info'
-          useAgentStore.getState().pushExtensionNotification(panelId, {
-            message: asString(event.message) ?? '',
-            notifyType,
-          })
-          return
-        }
+        // panel chrome (statuses / widgets / title) instead of putting them
+        // in the dialog queue.
+        if (method === 'notify') return
         if (method === 'setStatus') {
           const key = asString(event.statusKey) ?? 'default'
           const text = asString(event.statusText)

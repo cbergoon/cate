@@ -252,7 +252,6 @@ export const AUTH_OAUTH_PROMPT_REPLY = 'auth:oauthPromptReply' // renderer -> ma
 export const AUTH_OAUTH_EVENT = 'auth:oauthEvent'              // main -> renderer
 export const AUTH_SAVE_API_KEY = 'auth:saveApiKey'
 export const AUTH_DELETE = 'auth:delete'
-export const AUTH_LIST_MODELS = 'auth:listModels'
 
 // Workspace management (main process is source of truth)
 export const WORKSPACE_CREATE = 'workspace:create'

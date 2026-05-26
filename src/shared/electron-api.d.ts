@@ -631,7 +631,7 @@ export interface ElectronAPI {
   /** Control how follow-up messages drain. */
   agentSetFollowUpMode(panelId: string, mode: 'all' | 'one-at-a-time'): Promise<void>
 
-  /** Pi-derived list of available models (richer than authListModels). */
+  /** Available models from the Pi runtime session. */
   agentGetAvailableModels(panelId: string): Promise<Array<{ provider: string; id: string; contextWindow: number; reasoning: boolean }>>
 
   /** Reply to a pending extension UI request (fire-and-forget). */
@@ -741,9 +741,6 @@ export interface ElectronAPI {
 
   /** Disconnect a provider (clears stored credentials). */
   authDelete(providerId: string): Promise<void>
-
-  /** List available models per provider (for the model picker). */
-  authListModels(): Promise<Array<{ provider: string; model: string; label?: string }>>
 }
 
 declare global {

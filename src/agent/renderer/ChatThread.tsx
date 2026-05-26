@@ -85,19 +85,30 @@ export function ChatThread({ messages, pendingApprovals, onApproval, running, fo
       ref={scrollRef}
       className="flex-1 overflow-y-auto px-4 py-4 space-y-3 min-h-0"
     >
-      {messages.map((m, idx) => (
-        <MessageRow
-          key={m.id}
-          msg={m}
-          forkEntryId={m.type === 'user' ? (m.entryId ?? forkMap?.[m.id]) : undefined}
-          onFork={onFork}
-          onEditResend={onEditResend}
-          onImplementPlan={onImplementPlan}
-          onRefinePlan={onRefinePlan}
-          onClearAndImplement={onClearAndImplement}
-          isLast={idx === messages.length - 1}
-        />
-      ))}
+      {messages.map((m, idx) => {
+        let showModelTag = false
+        if (m.type === 'assistant') {
+          showModelTag = true
+          for (let j = idx + 1; j < messages.length; j++) {
+            if (messages[j].type === 'user') break
+            if (messages[j].type === 'assistant') { showModelTag = false; break }
+          }
+        }
+        return (
+          <MessageRow
+            key={m.id}
+            msg={m}
+            forkEntryId={m.type === 'user' ? (m.entryId ?? forkMap?.[m.id]) : undefined}
+            onFork={onFork}
+            onEditResend={onEditResend}
+            onImplementPlan={onImplementPlan}
+            onRefinePlan={onRefinePlan}
+            onClearAndImplement={onClearAndImplement}
+            isLast={idx === messages.length - 1}
+            showModelTag={showModelTag}
+          />
+        )
+      })}
       {pendingApprovals.map((req) => (
         <ApprovalCard
           key={req.toolCallId}
@@ -133,6 +144,7 @@ function MessageRow({
   onRefinePlan,
   onClearAndImplement,
   isLast,
+  showModelTag,
 }: {
   msg: AgentMessage
   forkEntryId?: string
@@ -142,6 +154,7 @@ function MessageRow({
   onRefinePlan?: (text: string) => void
   onClearAndImplement?: () => void
   isLast?: boolean
+  showModelTag?: boolean
 }) {
   if (msg.type === 'user') {
     return (
@@ -181,7 +194,7 @@ function MessageRow({
             >
               <Copy size={11} />
             </button>
-            {(msg.model || msg.createdAt) && (
+            {showModelTag && (msg.model || msg.createdAt) && (
               <span className="text-[10.5px] text-zinc-500 ml-1">
                 {msg.model}
                 {msg.model && msg.createdAt ? ' · ' : ''}

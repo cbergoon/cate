@@ -88,7 +88,11 @@ Cate replaces that pile of windows with **one persistent canvas per project**. T
 
 ## Install
 
+<<<<<<< HEAD
 If you just want to use Cate, download a prebuilt release — don't build from source. This repository currently targets **v1.0.1**.
+=======
+If you just want to use Cate, download a prebuilt release — don't build from source. This repository currently targets **v1.0.0**.
+>>>>>>> ef86540 (chore: bump version to 1.0.0)
 
 | Platform | Formats | Link |
 |----------|---------|------|

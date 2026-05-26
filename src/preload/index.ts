@@ -176,7 +176,6 @@ import {
   AUTH_OAUTH_EVENT,
   AUTH_SAVE_API_KEY,
   AUTH_DELETE,
-  AUTH_LIST_MODELS,
 } from '../shared/ipc-channels'
 
 // Cache native-fullscreen state so renderer drag handlers can synchronously
@@ -1184,7 +1183,4 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke(AUTH_DELETE, providerId)
   },
 
-  authListModels(): Promise<unknown[]> {
-    return ipcRenderer.invoke(AUTH_LIST_MODELS)
-  },
 })

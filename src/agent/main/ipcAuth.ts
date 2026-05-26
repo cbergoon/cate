@@ -10,7 +10,6 @@ import {
   AUTH_OAUTH_PROMPT_REPLY,
   AUTH_SAVE_API_KEY,
   AUTH_DELETE,
-  AUTH_LIST_MODELS,
 } from '../../shared/ipc-channels'
 import log from '../../main/logger'
 import type { AuthManager } from './authManager'
@@ -48,9 +47,5 @@ export function registerAuthHandlers(authManager: AuthManager): void {
 
   ipcMain.handle(AUTH_DELETE, async (_event, providerId: string) => {
     await authManager.deleteProvider(providerId)
-  })
-
-  ipcMain.handle(AUTH_LIST_MODELS, async () => {
-    return authManager.listModels()
   })
 }

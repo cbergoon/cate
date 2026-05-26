@@ -19,7 +19,8 @@
 // without a session file, then pick up pi's freshly-written file from getState.
 // =============================================================================
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Sparkle,
   Stop,
@@ -34,7 +35,7 @@ import {
   ChatCircleDots,
   MagnifyingGlass,
   FolderOpen,
-  Stack,
+
   ClipboardText,
   Spinner,
   ArrowsClockwise,
@@ -52,7 +53,7 @@ import {
   ExtensionWidget,
   ImageAttachButton,
   ImageChips,
-  NotificationsStack,
+
   QueueBadges,
   readFileAsImage,
   RetryBanner,
@@ -70,12 +71,23 @@ import type {
 import type { AgentMessage as StoreMessage } from './agentStore'
 import { loadDefaultModel, loadLastModel, saveLastModel } from './agentModelPrefs'
 
-const SUGGESTIONS: { label: string; prompt: string }[] = [
-  { label: 'Explain this codebase', prompt: 'Give me a high-level tour of this codebase. Where are the main entry points and how do the pieces fit together?' },
-  { label: 'Find a bug', prompt: 'Look at the recent changes in this workspace and tell me if you spot anything risky or wrong.' },
-  { label: 'Plan a change', prompt: 'I want to ' },
-  { label: 'Write a test', prompt: 'Write a test for ' },
-]
+
+function useNodePortalTarget(ref: React.RefObject<Element | null>) {
+  const [target, setTarget] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    const el = ref.current?.closest('[data-node-id]') as HTMLElement | null
+    setTarget(el)
+  }, [ref])
+  const toLocal = useCallback(
+    (viewport: { top: number; left: number }) => {
+      if (!target) return viewport
+      const tr = target.getBoundingClientRect()
+      return { top: viewport.top - tr.top, left: viewport.left - tr.left }
+    },
+    [target],
+  )
+  return { target, toLocal }
+}
 
 // -----------------------------------------------------------------------------
 // Component
@@ -152,7 +164,7 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
   const followUpQueue = slice?.followUpQueue ?? []
   const extensionStatuses = slice?.extensionStatuses ?? []
   const extensionWidgets = slice?.extensionWidgets ?? []
-  const extensionNotifications = slice?.extensionNotifications ?? []
+
   const uiRequests = slice?.uiRequests ?? []
   const currentUiRequest = uiRequests[0]
 
@@ -211,12 +223,8 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
 
   const refreshAuth = useCallback(async () => {
     try {
-      const [statuses, models] = await Promise.all([
-        window.electronAPI.authStatus(),
-        window.electronAPI.authListModels(),
-      ])
+      const statuses = await window.electronAPI.authStatus()
       setProviderStatuses(statuses)
-      setAvailableModels(models)
     } catch (err) {
       log.warn('[AgentPanel] refreshAuth failed', err)
     }
@@ -224,6 +232,17 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
 
   useEffect(() => { refreshAuth() }, [refreshAuth])
   useEffect(() => { if (view === 'chat') refreshAuth() }, [view, refreshAuth])
+
+  const refreshModels = useCallback(async (key?: string) => {
+    const k = key ?? activeAgentKey
+    if (!k) return
+    try {
+      const piModels = await window.electronAPI.agentGetAvailableModels(k)
+      if (piModels.length > 0) {
+        setAvailableModels(piModels.map((m) => ({ provider: m.provider, model: m.id, label: m.id })))
+      }
+    } catch { /* session may not support this RPC */ }
+  }, [activeAgentKey])
 
   // ---------------------------------------------------------------------------
   // Chat list — sourced directly from pi's on-disk sessions for this cwd.
@@ -297,6 +316,7 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
       // Pi's commands (skills + prompts + extensions) are only available once
       // the RPC session is up. Fetch after a successful create.
       void refreshCommands(key)
+      void refreshModels(key)
     } catch (err) {
       // Transient errors during rapid chat-switching are expected. Genuine
       // startup failures surface via the `if (!res.ok)` branch above.
@@ -548,19 +568,6 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
     setView('settings')
   }, [])
 
-  const submitPrompt = useCallback(async (text: string) => {
-    if (!activeAgentKey) return
-    if (!text.trim()) return
-    const isSteering = running
-    useAgentStore.getState().appendUser(activeAgentKey, isSteering ? `(steer) ${text}` : text)
-    try {
-      if (isSteering) await window.electronAPI.agentSteer(activeAgentKey, text)
-      else await window.electronAPI.agentPrompt(activeAgentKey, text)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      useAgentStore.getState().appendSystem(activeAgentKey, `Send failed: ${msg}`, 'error')
-    }
-  }, [activeAgentKey, running])
 
   // ---------------------------------------------------------------------------
   // Stats polling — refresh after every assistant turn (cheap; the call just
@@ -868,7 +875,8 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
           {view === 'chat' ? (
             <div className="relative">
               <button
-                onClick={() => setModelPickerOpen((v) => !v)}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => { setModelPickerOpen((v) => { if (!v) void refreshModels(); return !v }) }}
                 className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[12px] text-primary hover:bg-white/5"
               >
                 <Sparkle size={12} weight="fill" className="text-agent-light" />
@@ -901,6 +909,7 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
             commands={commands}
             workspaceId={workspaceId}
             scopedProviderId={settingsScopedTo}
+            availableModels={availableModels}
             onBack={() => setView('chat')}
             onRefresh={() => { if (activeAgentKey) void refreshCommands(activeAgentKey) }}
           />
@@ -964,21 +973,6 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
                       }
                     />
                   </div>
-                  <div className="w-full mt-2 grid grid-cols-2 gap-2 px-3">
-                    {SUGGESTIONS.map((s) => (
-                      <button
-                        key={s.label}
-                        onClick={() => {
-                          if (s.prompt.endsWith(' ')) setDraft(s.prompt)
-                          else { setDraft(''); void submitPrompt(s.prompt) }
-                        }}
-                        disabled={!!selectedModel && !selectedProviderConnected}
-                        className="text-left px-3 py-2 rounded-lg border border-white/5 bg-white/[0.02] hover:bg-white/[0.06] hover:border-white/10 text-[12px] text-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
                 </div>
               </div>
             ) : (
@@ -1032,10 +1026,6 @@ export default function AgentPanel({ panelId, workspaceId }: PanelProps) {
             )}
 
             <ExtensionStatusBar entries={extensionStatuses} />
-            <NotificationsStack
-              items={extensionNotifications}
-              onDismiss={(id) => activeAgentKey && useAgentStore.getState().dismissExtensionNotification(activeAgentKey, id)}
-            />
           </div>
         )}
       </div>
@@ -1437,20 +1427,12 @@ function ChatInput({
           >
             <ClipboardText size={12} weight={planModeActive ? 'fill' : 'regular'} />
           </button>
-          <button
-            onClick={onManualCompact}
-            onContextMenu={(e) => { e.preventDefault(); onToggleAutoCompaction() }}
-            disabled={compactionActive}
-            className={`p-1.5 rounded-md hover:bg-white/5 disabled:opacity-50 ${
-              autoCompactionEnabled ? 'text-primary/80' : 'text-muted/50'
-            }`}
-            title={
-              `Compact now (click) · auto-compact ${autoCompactionEnabled ? 'on' : 'off'} (right-click to toggle)` +
-              (compactionActive ? ' · compacting…' : '')
-            }
-          >
-            <Stack size={12} />
-          </button>
+          <CompactButton
+            onManualCompact={onManualCompact}
+            onToggleAutoCompaction={onToggleAutoCompaction}
+            autoCompactionEnabled={autoCompactionEnabled}
+            compactionActive={compactionActive}
+          />
           <StatsChip stats={stats} />
           <div className="flex-1" />
           {compactionActive ? (
@@ -1495,8 +1477,105 @@ function ChatInput({
 }
 
 // -----------------------------------------------------------------------------
+// Compact button — popover with confirm + auto-compact toggle.
+// -----------------------------------------------------------------------------
+
+function CompactButton({
+  onManualCompact,
+  onToggleAutoCompaction,
+  autoCompactionEnabled,
+  compactionActive,
+}: {
+  onManualCompact: () => void
+  onToggleAutoCompaction: () => void
+  autoCompactionEnabled: boolean
+  compactionActive: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
+  const { target: portalTarget, toLocal } = useNodePortalTarget(btnRef)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (btnRef.current?.contains(e.target as Node)) return
+      if (popoverRef.current?.contains(e.target as Node)) return
+      setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current) return
+    const r = btnRef.current.getBoundingClientRect()
+    const popW = 200
+    let left = r.left
+    if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8
+    setPos(toLocal({ top: r.top - 6, left }))
+  }, [open, toLocal])
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={() => setOpen((v) => !v)}
+        disabled={compactionActive}
+        className={`p-1.5 rounded-md hover:bg-white/5 disabled:opacity-50 ${
+          autoCompactionEnabled ? 'text-primary/80' : 'text-muted/50'
+        }`}
+        title="Compact context"
+      >
+        <ArrowsClockwise size={12} className={compactionActive ? 'animate-spin' : ''} />
+      </button>
+      {open && pos && portalTarget && createPortal(
+        <div
+          ref={popoverRef}
+          className="absolute w-[200px] rounded-lg border border-white/10 bg-surface-4/98 backdrop-blur-xl shadow-[0_12px_32px_rgba(0,0,0,0.45)] z-[9999] overflow-hidden"
+          style={{ top: pos.top, left: pos.left, transform: 'translateY(-100%)' }}
+        >
+          <button
+            onClick={() => { setOpen(false); onManualCompact() }}
+            disabled={compactionActive}
+            className="w-full text-left px-3 py-2 text-[12px] text-primary hover:bg-white/5 disabled:opacity-50"
+          >
+            Compact now
+          </button>
+          <div className="border-t border-white/5">
+            <button
+              onClick={() => onToggleAutoCompaction()}
+              className="w-full flex items-center justify-between px-3 py-2 text-[12px] text-primary hover:bg-white/5"
+            >
+              <span>Auto-compact</span>
+              <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                autoCompactionEnabled ? 'bg-agent/20 text-agent-light' : 'bg-white/5 text-muted'
+              }`}>
+                {autoCompactionEnabled ? 'on' : 'off'}
+              </span>
+            </button>
+          </div>
+        </div>,
+        portalTarget,
+      )}
+    </>
+  )
+}
+
+// -----------------------------------------------------------------------------
 // Stats chip — single-glance % of context used, full breakdown on hover.
 // -----------------------------------------------------------------------------
+
+function ContextRing({ percent, size = 14, stroke = 1.5 }: { percent: number; size?: number; stroke?: number }) {
+  const r = (size - stroke) / 2
+  const circ = 2 * Math.PI * r
+  const filled = circ * (Math.min(percent, 100) / 100)
+  const color = percent > 85 ? '#f87171' : percent > 65 ? '#fbbf24' : 'currentColor'
+  return (
+    <svg width={size} height={size} className="shrink-0 -rotate-90">
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="currentColor" strokeWidth={stroke} className="opacity-20" />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={stroke} strokeDasharray={`${filled} ${circ - filled}`} strokeLinecap="round" />
+    </svg>
+  )
+}
 
 function StatsChip({
   stats,
@@ -1504,22 +1583,27 @@ function StatsChip({
   stats: import('../../shared/types').AgentSessionStats | null
 }) {
   const [open, setOpen] = useState(false)
-  const wrapRef = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
+  const { target: portalTarget, toLocal } = useNodePortalTarget(btnRef)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
   useEffect(() => {
     if (!open) return
     const handler = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false)
+      if (btnRef.current?.contains(e.target as Node)) return
+      if (popoverRef.current?.contains(e.target as Node)) return
+      setOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current) return
+    const r = btnRef.current.getBoundingClientRect()
+    setPos(toLocal({ top: r.top - 6, left: r.left }))
+  }, [open, toLocal])
   if (!stats) return null
   const ctx = stats.contextUsage
-  // Pi reports `tokens` and `contextWindow` reliably but sometimes leaves
-  // `percent` null (notably right after a compaction, before the next turn has
-  // run). Compute it ourselves in that case so the chip stays a stable "N%"
-  // instead of regressing to a cumulative session-token fallback that doesn't
-  // reflect current context occupancy.
   const ctxTokens = ctx?.tokens ?? null
   const ctxWindow = ctx?.contextWindow ?? null
   const ctxKnown = ctxTokens != null && ctxWindow != null && ctxWindow > 0
@@ -1530,7 +1614,6 @@ function StatsChip({
       ? (ctxTokens! / ctxWindow!) * 100
       : null
   const pctRounded = pctRaw != null ? Math.round(pctRaw) : null
-  const label = pctRounded != null ? `${pctRounded}%` : '-'
   const tone =
     pctRounded == null
       ? 'text-muted/70'
@@ -1541,49 +1624,64 @@ function StatsChip({
       : 'text-muted/70'
   const fmtCost = (c: number) =>
     c >= 1 ? `$${c.toFixed(2)}` : c >= 0.01 ? `$${c.toFixed(3)}` : `$${c.toFixed(4)}`
+  const barPct = pctRounded ?? 0
+  const barColor = barPct > 85 ? 'bg-red-400' : barPct > 65 ? 'bg-amber-400' : 'bg-agent-light'
   return (
-    <div ref={wrapRef} className="relative">
+    <>
       <button
+        ref={btnRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className={`px-1.5 py-0.5 rounded text-[10.5px] font-mono ${tone} hover:bg-white/5`}
+        className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono ${tone} hover:bg-white/5`}
         title="Conversation stats"
       >
-        {label}
+        {pctRounded != null ? <ContextRing percent={pctRounded} /> : <span>-</span>}
       </button>
-      {open && (
-        <div className="absolute bottom-full left-0 mb-1.5 w-[240px] rounded-lg border border-white/10 bg-surface-4/98 backdrop-blur-xl shadow-[0_12px_32px_rgba(0,0,0,0.45)] z-30 p-3 text-[11.5px] text-primary font-mono space-y-1.5">
-          <div className="flex justify-between gap-3">
-            <span className="text-muted">Context</span>
-            <span>
-              {ctxTokens != null ? formatTokensShort(ctxTokens) : '-'}
-              {ctxWindow ? ` / ${formatTokensShort(ctxWindow)}` : ''}
-              {pctRounded != null ? ` · ${pctRounded}%` : ''}
-            </span>
+      {open && pos && portalTarget && createPortal(
+        <div
+          ref={popoverRef}
+          className="absolute w-[260px] rounded-lg border border-white/10 bg-surface-4/98 backdrop-blur-xl shadow-[0_12px_32px_rgba(0,0,0,0.45)] z-[9999] text-[11.5px] text-primary font-mono"
+          style={{ top: pos.top, left: pos.left, transform: 'translateY(-100%)' }}
+        >
+          <div className="px-3 pt-3 pb-2 border-b border-white/5">
+            <div className="flex justify-between items-baseline mb-1.5">
+              <span className="text-muted text-[10px] uppercase tracking-wider font-semibold">Context window</span>
+              <span>
+                {ctxTokens != null ? formatTokensShort(ctxTokens) : '-'}
+                {ctxWindow ? <span className="text-muted"> / {formatTokensShort(ctxWindow)}</span> : ''}
+              </span>
+            </div>
+            <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+              <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${barPct}%` }} />
+            </div>
           </div>
-          <div className="flex justify-between gap-3">
-            <span className="text-muted">Cost</span>
+          <div className="px-3 pt-2 pb-2 border-b border-white/5 space-y-1">
+            <div className="text-muted text-[10px] uppercase tracking-wider font-semibold mb-1">Billed tokens</div>
+            <div className="flex justify-between gap-3">
+              <span className="text-muted">Input</span>
+              <span>{formatTokensShort(stats.tokens.input)}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-muted">Output</span>
+              <span>{formatTokensShort(stats.tokens.output)}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-muted">Cache read</span>
+              <span>{formatTokensShort(stats.tokens.cacheRead)}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-muted">Cache write</span>
+              <span>{formatTokensShort(stats.tokens.cacheWrite)}</span>
+            </div>
+          </div>
+          <div className="px-3 py-2 flex justify-between gap-3">
+            <span className="text-muted">Total cost</span>
             <span>{fmtCost(stats.cost)}</span>
           </div>
-          <div className="flex justify-between gap-3">
-            <span className="text-muted">Input</span>
-            <span>{formatTokensShort(stats.tokens.input)}t</span>
-          </div>
-          <div className="flex justify-between gap-3">
-            <span className="text-muted">Output</span>
-            <span>{formatTokensShort(stats.tokens.output)}t</span>
-          </div>
-          <div className="flex justify-between gap-3">
-            <span className="text-muted">Cache read</span>
-            <span>{formatTokensShort(stats.tokens.cacheRead)}t</span>
-          </div>
-          <div className="flex justify-between gap-3">
-            <span className="text-muted">Cache write</span>
-            <span>{formatTokensShort(stats.tokens.cacheWrite)}t</span>
-          </div>
-        </div>
+        </div>,
+        portalTarget,
       )}
-    </div>
+    </>
   )
 }
 
@@ -1669,50 +1767,81 @@ function SettingsView({
   commands,
   workspaceId,
   scopedProviderId,
+  availableModels,
   onBack,
   onRefresh,
 }: {
   commands: AgentSlashCommand[]
   workspaceId: string
   scopedProviderId?: string
+  availableModels: Array<{ provider: string; model: string; label?: string }>
   onBack: () => void
   onRefresh: () => void
 }) {
-  type SettingsTab = 'providers' | 'agents' | 'prompts' | 'skills' | 'extensions'
-  const [tab, setTab] = useState<SettingsTab>('providers')
-  useEffect(() => { if (scopedProviderId) setTab('providers') }, [scopedProviderId])
-  const [creating, setCreating] = useState(false)
+  const [activeSection, setActiveSection] = useState('providers')
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const sectionRefs = useRef<Record<string, HTMLElement | null>>({})
+
+  const scrollTo = useCallback((id: string) => {
+    const el = sectionRefs.current[id]
+    if (el && scrollRef.current) {
+      const top = el.offsetTop - scrollRef.current.offsetTop
+      scrollRef.current.scrollTo({ top, behavior: 'smooth' })
+    }
+  }, [])
+
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!container) return
+    const handler = () => {
+      const ids = ['providers', 'agents', 'prompts', 'skills', 'extensions']
+      let closest = ids[0]
+      let closestDist = Infinity
+      for (const id of ids) {
+        const el = sectionRefs.current[id]
+        if (!el) continue
+        const dist = Math.abs(el.offsetTop - container.offsetTop - container.scrollTop)
+        if (dist < closestDist) { closestDist = dist; closest = id }
+      }
+      setActiveSection(closest)
+    }
+    container.addEventListener('scroll', handler, { passive: true })
+    return () => container.removeEventListener('scroll', handler)
+  }, [])
+
+  useEffect(() => { if (scopedProviderId) scrollTo('providers') }, [scopedProviderId, scrollTo])
+
+  const [agentFiles, setAgentFiles] = useState<Array<{ name: string; description?: string; path: string }>>([])
+  const [promptFiles, setPromptFiles] = useState<Array<{ name: string; description?: string; path: string }>>([])
+  const [skillFiles, setSkillFiles] = useState<Array<{ name: string; description?: string; path: string }>>([])
+  const [creating, setCreating] = useState<'agents' | 'prompts' | 'skills' | null>(null)
   const [newName, setNewName] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [files, setFiles] = useState<Array<{ name: string; description?: string; path: string }>>([])
 
-  const refreshFiles = useCallback(async () => {
-    if (tab === 'providers' || tab === 'extensions') return
+  const refreshAllFiles = useCallback(async () => {
     try {
-      const list = await window.electronAPI.agentListSkillFiles(tab)
-      setFiles(list)
+      const [a, p, s] = await Promise.all([
+        window.electronAPI.agentListSkillFiles('agents'),
+        window.electronAPI.agentListSkillFiles('prompts'),
+        window.electronAPI.agentListSkillFiles('skills'),
+      ])
+      setAgentFiles(a); setPromptFiles(p); setSkillFiles(s)
     } catch (err) { log.warn('[SettingsView] list failed', err) }
-  }, [tab])
+  }, [])
 
-  useEffect(() => { void refreshFiles() }, [refreshFiles])
+  useEffect(() => { void refreshAllFiles() }, [refreshAllFiles])
 
-  // Pi also exposes skills shipped inside packages — surface them in the skills
-  // tab so users can see what's loaded even if there's no editable file.
   const packageSkills = useMemo(
     () => commands.filter((c) => c.source === 'skill' && !c.editable),
     [commands],
   )
 
-  const createKind: 'agents' | 'prompts' | 'skills' =
-    tab === 'agents' || tab === 'prompts' || tab === 'skills' ? tab : 'agents'
-
-  const handleCreate = async (): Promise<void> => {
-    if (tab === 'providers' || tab === 'extensions') return
+  const handleCreate = async (kind: 'agents' | 'prompts' | 'skills'): Promise<void> => {
     setError(null)
     try {
-      const created = await window.electronAPI.agentCreateSkill(createKind, newName)
-      setNewName(''); setCreating(false)
-      await refreshFiles()
+      const created = await window.electronAPI.agentCreateSkill(kind, newName)
+      setNewName(''); setCreating(null)
+      await refreshAllFiles()
       onRefresh()
       useAppStore.getState().createEditor(workspaceId, created)
     } catch (err) {
@@ -1725,158 +1854,169 @@ function SettingsView({
     useAppStore.getState().createEditor(workspaceId, filePath)
   }
 
-  const handleDelete = async (filePath?: string): Promise<void> => {
+  const handleDelete = async (kind: string, filePath?: string): Promise<void> => {
     if (!filePath) return
-    if (!window.confirm(`Delete this ${tab.slice(0, -1)}?`)) return
+    if (!window.confirm(`Delete this ${kind.slice(0, -1)}?`)) return
     try {
       await window.electronAPI.agentDeleteSkillFile(filePath)
-      await refreshFiles()
+      await refreshAllFiles()
       onRefresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
   }
 
-  const openFolder = (): void => {
-    window.electronAPI.agentOpenSkillsFolder(createKind).catch(() => { /* */ })
-  }
-
-  const isSkillTab = tab === 'agents' || tab === 'prompts' || tab === 'skills'
-  const isExtensionsTab = tab === 'extensions'
   const [refreshNonce, setRefreshNonce] = useState(0)
-  const showRefresh = isSkillTab || isExtensionsTab
-  const handleTopRefresh = (): void => {
-    if (isSkillTab) onRefresh()
-    if (isExtensionsTab) setRefreshNonce((n) => n + 1)
-  }
+
+  const sections = ['Providers', 'Agents', 'Prompts', 'Skills', 'Extensions'] as const
+
+  const renderSkillSection = (
+    kind: 'agents' | 'prompts' | 'skills',
+    files: Array<{ name: string; description?: string; path: string }>,
+  ) => (
+    <>
+      <div className="flex items-center gap-2 mt-2">
+        {creating !== kind && (
+          <button
+            onClick={() => { setCreating(kind); setError(null); setNewName('') }}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-agent/20 hover:bg-agent/30 text-primary text-[12px]"
+          >
+            <Plus size={11} /> New {kind.slice(0, -1)}
+          </button>
+        )}
+        <button
+          onClick={() => window.electronAPI.agentOpenSkillsFolder(kind).catch(() => {})}
+          className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 text-primary text-[12px]"
+        >
+          <FolderOpen size={11} /> Open folder
+        </button>
+      </div>
+      {creating === kind && (
+        <div className="rounded-lg bg-white/[0.03] p-2 flex items-center gap-2 mt-2">
+          <input
+            autoFocus
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleCreate(kind)
+              if (e.key === 'Escape') { setCreating(null); setNewName(''); setError(null) }
+            }}
+            placeholder={`${kind.slice(0, -1)} name`}
+            className="flex-1 bg-surface-3 border border-white/10 rounded-md px-2 py-1 text-[12px] text-primary outline-none focus:border-agent/60 font-mono"
+          />
+          <button
+            onClick={() => handleCreate(kind)}
+            disabled={!newName.trim()}
+            className="px-2.5 py-1 rounded-md bg-agent hover:bg-agent-light disabled:opacity-40 text-white text-[12px]"
+          >
+            Create
+          </button>
+          <button
+            onClick={() => { setCreating(null); setNewName(''); setError(null) }}
+            className="px-2 py-1 rounded-md text-muted hover:text-primary text-[12px]"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+      {creating === kind && error && <div className="text-[12px] text-primary mt-1">{error}</div>}
+      <div className="rounded-lg bg-white/[0.02] overflow-hidden mt-2">
+        {files.length === 0 && (kind !== 'skills' || packageSkills.length === 0) ? (
+          <div className="px-3 py-4 text-center text-[12px] text-muted">
+            No {kind} yet.
+          </div>
+        ) : (
+          <>
+            {files.map((f) => (
+              <SkillRow
+                key={f.path}
+                name={f.name}
+                description={f.description}
+                badge={TAB_BADGE[kind]}
+                badgeClass={TAB_BADGE_COLOR[kind]}
+                filePath={f.path}
+                deletable={true}
+                onOpen={() => handleOpen(f.path)}
+                onDelete={() => handleDelete(kind, f.path)}
+              />
+            ))}
+            {kind === 'skills' && packageSkills.map((c) => (
+              <SkillRow
+                key={`pkg-${c.name}-${c.path ?? ''}`}
+                name={c.name}
+                description={c.description}
+                badge="Built-in"
+                badgeClass="text-muted bg-white/5"
+                filePath={c.path}
+                deletable={false}
+                onOpen={() => handleOpen(c.path)}
+                onDelete={() => {}}
+              />
+            ))}
+          </>
+        )}
+      </div>
+    </>
+  )
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-4 min-h-0 text-primary">
-      <div className="max-w-[560px] mx-auto space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <button onClick={onBack} className="text-[11px] text-muted hover:text-primary">
-            ← Back to chat
-          </button>
-          {showRefresh && (
+    <div className="flex-1 flex min-h-0 text-primary">
+      <div className="w-[110px] shrink-0 py-4 pl-3 pr-1 flex flex-col gap-0.5">
+        <button onClick={onBack} className="text-[11px] text-muted hover:text-primary mb-3 text-left">
+          ← Back
+        </button>
+        {sections.map((label) => {
+          const id = label.toLowerCase()
+          return (
             <button
-              onClick={handleTopRefresh}
+              key={id}
+              onClick={() => scrollTo(id)}
+              className={`text-left px-2 py-1 rounded-md text-[12px] ${
+                activeSection === id
+                  ? 'text-primary bg-white/10'
+                  : 'text-muted hover:text-primary'
+              }`}
+            >
+              {label}
+            </button>
+          )
+        })}
+      </div>
+
+      <div ref={scrollRef} className="flex-1 overflow-y-auto py-4 pr-4 pl-2 min-h-0 space-y-8">
+        <div ref={(el) => { sectionRefs.current['providers'] = el }}>
+          <div className="text-[13px] font-semibold text-primary mb-3">Providers</div>
+          <ProvidersView embedded scopedProviderId={scopedProviderId} availableModels={availableModels} />
+        </div>
+
+        <div ref={(el) => { sectionRefs.current['agents'] = el }}>
+          <div className="text-[13px] font-semibold text-primary mb-1">Agents</div>
+          {renderSkillSection('agents', agentFiles)}
+        </div>
+
+        <div ref={(el) => { sectionRefs.current['prompts'] = el }}>
+          <div className="text-[13px] font-semibold text-primary mb-1">Prompts</div>
+          {renderSkillSection('prompts', promptFiles)}
+        </div>
+
+        <div ref={(el) => { sectionRefs.current['skills'] = el }}>
+          <div className="text-[13px] font-semibold text-primary mb-1">Skills</div>
+          {renderSkillSection('skills', skillFiles)}
+        </div>
+
+        <div ref={(el) => { sectionRefs.current['extensions'] = el }}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-[13px] font-semibold text-primary">Extensions</div>
+            <button
+              onClick={() => setRefreshNonce((n) => n + 1)}
               className="p-1 rounded-md text-muted hover:text-primary hover:bg-white/5"
               title="Refresh"
-              aria-label="Refresh"
             >
               <ArrowsClockwise size={12} />
             </button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1 p-1 rounded-lg bg-black/20 w-fit">
-          {(['providers', 'agents', 'prompts', 'skills', 'extensions'] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => { setTab(t); setCreating(false); setError(null) }}
-              className={`px-3 py-1 rounded-md text-[12px] capitalize ${
-                tab === t ? 'bg-white/10 text-primary' : 'text-muted hover:text-primary'
-              }`}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-
-        {isSkillTab && (
-        <div className="flex items-center gap-2">
-          {!creating && (
-            <button
-              onClick={() => { setCreating(true); setError(null) }}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-agent/20 hover:bg-agent/30 text-primary text-[12px]"
-            >
-              <Plus size={11} /> New {tab.slice(0, -1)}
-            </button>
-          )}
-          <button
-            onClick={openFolder}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 text-primary text-[12px]"
-          >
-            <FolderOpen size={11} /> Open folder
-          </button>
-        </div>
-        )}
-
-        {isSkillTab && creating && (
-          <div className="rounded-lg bg-white/[0.03] p-2 flex items-center gap-2">
-            <input
-              autoFocus
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleCreate()
-                if (e.key === 'Escape') { setCreating(false); setNewName(''); setError(null) }
-              }}
-              placeholder={`${tab.slice(0, -1)} name`}
-              className="flex-1 bg-surface-3 border border-white/10 rounded-md px-2 py-1 text-[12px] text-primary outline-none focus:border-agent/60 font-mono"
-            />
-            <button
-              onClick={handleCreate}
-              disabled={!newName.trim()}
-              className="px-2.5 py-1 rounded-md bg-agent hover:bg-agent-light disabled:opacity-40 text-white text-[12px]"
-            >
-              Create
-            </button>
-            <button
-              onClick={() => { setCreating(false); setNewName(''); setError(null) }}
-              className="px-2 py-1 rounded-md text-muted hover:text-primary text-[12px]"
-            >
-              Cancel
-            </button>
           </div>
-        )}
-
-        {isSkillTab && error && <div className="text-[12px] text-primary">{error}</div>}
-
-        {tab === 'providers' ? (
-          <div className="-mx-4">
-            <ProvidersView embedded scopedProviderId={scopedProviderId} />
-          </div>
-        ) : isExtensionsTab ? (
           <ExtensionsTab refreshNonce={refreshNonce} />
-        ) : (
-          <div className="rounded-lg bg-white/[0.02] overflow-hidden">
-            {files.length === 0 && (tab !== 'skills' || packageSkills.length === 0) ? (
-              <div className="px-3 py-6 text-center text-[12px] text-muted">
-                No {tab} yet.
-              </div>
-            ) : (
-              <>
-                {files.map((f) => (
-                  <SkillRow
-                    key={f.path}
-                    name={f.name}
-                    description={f.description}
-                    badge={TAB_BADGE[tab as 'agents' | 'prompts' | 'skills']}
-                    badgeClass={TAB_BADGE_COLOR[tab as 'agents' | 'prompts' | 'skills']}
-                    filePath={f.path}
-                    deletable={true}
-                    onOpen={() => handleOpen(f.path)}
-                    onDelete={() => handleDelete(f.path)}
-                  />
-                ))}
-                {tab === 'skills' && packageSkills.map((c) => (
-                  <SkillRow
-                    key={`pkg-${c.name}-${c.path ?? ''}`}
-                    name={c.name}
-                    description={c.description}
-                    badge="Built-in"
-                    badgeClass="text-muted bg-white/5"
-                    filePath={c.path}
-                    deletable={false}
-                    onOpen={() => handleOpen(c.path)}
-                    onDelete={() => { /* not deletable */ }}
-                  />
-                ))}
-              </>
-            )}
-          </div>
-        )}
+        </div>
       </div>
     </div>
   )

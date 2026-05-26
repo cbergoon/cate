@@ -41,12 +41,15 @@ interface ProvidersViewProps {
   scopedProviderId?: string
   /** When true, render without the outer header (parent owns navigation). */
   embedded?: boolean
+  /** Models from the Pi runtime session, used for the default model picker. */
+  availableModels?: Array<{ provider: string; model: string; label?: string }>
 }
 
-export function ProvidersView({ onBack, scopedProviderId, embedded = false }: ProvidersViewProps) {
+export function ProvidersView({ onBack, scopedProviderId, embedded = false, availableModels }: ProvidersViewProps) {
   const [providers, setProviders] = useState<AuthProviderDescriptor[]>([])
   const [statuses, setStatuses] = useState<AuthProviderStatus[]>([])
   const [detailId, setDetailId] = useState<string | null>(null)
+  const [detailKind, setDetailKind] = useState<'oauth' | 'apiKey' | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -83,14 +86,14 @@ export function ProvidersView({ onBack, scopedProviderId, embedded = false }: Pr
   }, [providers])
 
   const selectedProvider = useMemo(
-    () => (detailId ? providers.find((p) => p.id === detailId) ?? null : null),
-    [providers, detailId],
+    () => (detailId ? providers.find((p) => p.id === detailId && (!detailKind || p.kind === detailKind)) ?? null : null),
+    [providers, detailId, detailKind],
   )
 
   const headerTitle = selectedProvider?.name ?? 'Providers'
 
   const handleBack = useCallback(() => {
-    if (detailId) setDetailId(null)
+    if (detailId) { setDetailId(null); setDetailKind(null) }
     else onBack?.()
   }, [detailId, onBack])
 
@@ -116,24 +119,24 @@ export function ProvidersView({ onBack, scopedProviderId, embedded = false }: Pr
       <div className="flex-1 overflow-y-auto min-h-0">
         {!selectedProvider ? (
           <div className="px-3 py-3 space-y-4">
-            <DefaultModelSection statuses={statuses} />
+            <DefaultModelSection models={availableModels ?? []} />
             <Section label="Sign in">
               {grouped.oauth.map((p) => (
                 <ProviderListRow
-                  key={p.id}
+                  key={`oauth-${p.id}`}
                   name={p.name}
                   status={statusFor(p.id)}
-                  onClick={() => setDetailId(p.id)}
+                  onClick={() => { setDetailId(p.id); setDetailKind('oauth') }}
                 />
               ))}
             </Section>
             <Section label="API key">
               {grouped.apiKey.map((p) => (
                 <ProviderListRow
-                  key={p.id}
+                  key={`apiKey-${p.id}`}
                   name={p.name}
                   status={statusFor(p.id)}
-                  onClick={() => setDetailId(p.id)}
+                  onClick={() => { setDetailId(p.id); setDetailKind('apiKey') }}
                 />
               ))}
             </Section>
@@ -310,22 +313,28 @@ function OAuthForm({
 
   return (
     <div className="space-y-4">
-      {phase.type === 'idle' && (
-        <div className="space-y-3">
+      {phase.type === 'idle' && !status?.connected && (
+        <button
+          onClick={handleStart}
+          className="w-full px-3 py-2.5 rounded-lg bg-agent hover:bg-agent-light text-white text-[13px] font-medium"
+        >
+          Sign in with {provider.name}
+        </button>
+      )}
+      {phase.type === 'idle' && status?.connected && (
+        <div className="flex items-center gap-3">
           <button
             onClick={handleStart}
-            className="w-full px-3 py-2.5 rounded-lg bg-agent hover:bg-agent-light text-white text-[13px] font-medium"
+            className="flex-1 px-3 py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-primary text-[12px]"
           >
-            Sign in with {provider.name}
+            Re-authenticate
           </button>
-          {status?.connected && (
-            <button
-              onClick={handleDisconnect}
-              className="block text-[11px] text-muted hover:text-primary hover:underline"
-            >
-              Disconnect
-            </button>
-          )}
+          <button
+            onClick={handleDisconnect}
+            className="px-3 py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-[12px] text-rose-300 hover:text-rose-200"
+          >
+            Disconnect
+          </button>
         </div>
       )}
 
@@ -593,23 +602,9 @@ function ApiKeyForm({
 // together.
 // -----------------------------------------------------------------------------
 
-function DefaultModelSection({ statuses }: { statuses: AuthProviderStatus[] }) {
-  const [models, setModels] = useState<Array<{ provider: string; model: string; label?: string }>>([])
+function DefaultModelSection({ models }: { models: Array<{ provider: string; model: string; label?: string }> }) {
   const [current, setCurrent] = useState<AgentModelRef | null>(() => loadDefaultModel())
   const [open, setOpen] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const list = await window.electronAPI.authListModels()
-        if (!cancelled) setModels(list)
-      } catch (err) {
-        log.warn('[DefaultModelSection] listModels failed', err)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [statuses])
 
   const handlePick = useCallback((m: { provider: string; model: string } | null) => {
     if (!m) {
