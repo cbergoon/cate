@@ -16,12 +16,8 @@ import os from 'os'
 import path from 'path'
 import {
   findEnvKeys,
-  getModels,
   type OAuthCredentials,
   type OAuthLoginCallbacks,
-  type Model,
-  type Api,
-  type KnownProvider,
 } from '@earendil-works/pi-ai'
 import { getOAuthProvider, getOAuthProviders } from '@earendil-works/pi-ai/oauth'
 import log from '../../main/logger'
@@ -337,49 +333,6 @@ export class AuthManager {
   }
 
   // -------------------------------------------------------------------------
-  // Models
-  // -------------------------------------------------------------------------
-
-  async listModels(): Promise<Array<{ provider: string; model: string; label?: string }>> {
-    const status = await this.status()
-    const connected = new Set(status.filter((s) => s.connected).map((s) => s.id))
-    const out: Array<{ provider: string; model: string; label?: string }> = []
-
-    // Built-in models for connected providers.
-    const knownProviders: KnownProvider[] = [
-      'anthropic',
-      'openai',
-      'openai-codex',
-      'openrouter',
-      'google',
-      'groq',
-      'xai',
-      'mistral',
-      'deepseek',
-      'moonshotai',
-      'zai',
-      'minimax',
-      'cerebras',
-      'together',
-      'fireworks',
-      'huggingface',
-      'cloudflare-workers-ai',
-      'vercel-ai-gateway',
-      'github-copilot',
-    ]
-    for (const provider of knownProviders) {
-      if (!connected.has(provider)) continue
-      let models: Model<Api>[] = []
-      try {
-        models = getModels(provider) as Model<Api>[]
-      } catch { /* unknown provider */ }
-      for (const m of models) {
-        out.push({ provider, model: m.id, label: m.name })
-      }
-    }
-
-    return out
-  }
 }
 
 // Single shared instance — main process is one per app.

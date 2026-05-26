@@ -317,8 +317,18 @@ export interface ElectronAPI {
   /** Open a native folder picker. Returns the selected path or null if canceled. */
   openFolderDialog(): Promise<string | null>
 
-  /** Native unsaved-changes confirmation. Returns 'save' | 'discard' | 'cancel'. */
-  confirmUnsavedChanges(payload: { fileName?: string; multiple?: boolean }): Promise<'save' | 'discard' | 'cancel'>
+  /** Open a native Save-As dialog. Returns the chosen path or null if canceled.
+   *  defaultName is used as the filename pre-fill, defaultPath as the starting
+   *  directory + filename (takes precedence). The returned path is the canonical
+   *  (realpath-of-parent + basename) form that the main process granted access
+   *  to — store that exact string on the panel state to keep future
+   *  reads/writes aligned with the grant set. */
+  saveFileDialog(payload?: { defaultName?: string; defaultPath?: string }): Promise<string | null>
+
+  /** Native unsaved-changes confirmation. Returns 'save' | 'discard' | 'cancel'.
+   *  `filePath`, when supplied for a single dirty file, is shown as the dialog
+   *  detail so the user can see exactly which file on disk is about to change. */
+  confirmUnsavedChanges(payload: { fileName?: string; multiple?: boolean; filePath?: string }): Promise<'save' | 'discard' | 'cancel'>
 
   /** Native confirmation shown when closing a canvas panel. When the canvas is
    *  not the last and has open panels, returns 'move' | 'delete' | 'cancel'.
@@ -408,6 +418,11 @@ export interface ElectronAPI {
   /** Report the terminal ptyId for this panel window so the main process can persist it. */
   panelWindowSyncPty(ptyId: string): Promise<void>
 
+  /** Push an updated PanelState snapshot for this panel window so the
+   *  main-process windowRegistry meta (used by session persistence and the
+   *  panel-window list) reflects post-Save-As filePath/title/dirty state. */
+  panelWindowSyncMeta(payload: { panel: PanelState; workspaceId?: string }): Promise<void>
+
   /** Request this panel window to dock back into the main window. */
   panelWindowDockBack(): Promise<void>
 
@@ -433,6 +448,10 @@ export interface ElectronAPI {
 
   /** Subscribe to drag end events (main -> renderer). */
   onDragEnd(callback: () => void): () => void
+
+  /** Subscribe to native-fullscreen state changes. Fires with the new boolean
+   *  whenever any Cate window enters or leaves macOS native fullscreen. */
+  onFullscreenChange(callback: (isFullscreen: boolean) => void): () => void
 
   // ---------------------------------------------------------------------------
   // Dock window management
@@ -544,6 +563,10 @@ export interface ElectronAPI {
   trackFeedbackEngagement(): void
   /** Pull-based check for pending feedback (renderer calls on mount). */
   getPendingFeedback(): Promise<{ fromVersion: string; toVersion: string } | null>
+  /** Track a promo link click (e.g. product_hunt, github_star, newsletter). */
+  trackLinkClick(link: string): void
+  /** Open an external URL in the user's default browser. */
+  openExternalUrl(url: string): void
 
   // ---------------------------------------------------------------------------
   // Pi agent
@@ -623,7 +646,7 @@ export interface ElectronAPI {
   /** Control how follow-up messages drain. */
   agentSetFollowUpMode(panelId: string, mode: 'all' | 'one-at-a-time'): Promise<void>
 
-  /** Pi-derived list of available models (richer than authListModels). */
+  /** Available models from the Pi runtime session. */
   agentGetAvailableModels(panelId: string): Promise<Array<{ provider: string; id: string; contextWindow: number; reasoning: boolean }>>
 
   /** Reply to a pending extension UI request (fire-and-forget). */
@@ -733,9 +756,6 @@ export interface ElectronAPI {
 
   /** Disconnect a provider (clears stored credentials). */
   authDelete(providerId: string): Promise<void>
-
-  /** List available models per provider (for the model picker). */
-  authListModels(): Promise<Array<{ provider: string; model: string; label?: string }>>
 }
 
 declare global {

@@ -113,6 +113,11 @@ export const ANALYTICS_FEEDBACK_DISMISS = 'analytics:feedbackDismiss'
 export const ANALYTICS_FEEDBACK_ENGAGED = 'analytics:feedbackEngaged'
 // Renderer -> main: pull-based check for pending feedback (returns payload or null).
 export const ANALYTICS_FEEDBACK_GET_PENDING = 'analytics:feedbackGetPending'
+// Renderer -> main: track a promo link click (Product Hunt, GitHub, newsletter).
+export const ANALYTICS_LINK_CLICK = 'analytics:linkClick'
+
+// Open an external URL in the user's default browser (renderer -> main).
+export const OPEN_EXTERNAL_URL = 'open:externalUrl'
 
 
 // Menu actions (main -> renderer)
@@ -126,9 +131,16 @@ export const MENU_SHOW_CONTEXT = 'menu:showContext'
 
 // Dialog
 export const DIALOG_OPEN_FOLDER = 'dialog:openFolder'
+export const DIALOG_SAVE_FILE = 'dialog:saveFile'
 export const DIALOG_CONFIRM_UNSAVED = 'dialog:confirmUnsaved'
 export const DIALOG_CONFIRM_CLOSE_CANVAS = 'dialog:confirmCloseCanvas'
 export const DIALOG_CONFIRM_DELETE_REGION = 'dialog:confirmDeleteRegion'
+
+// Panel window: renderer pushes an updated PanelState snapshot to main so
+// the windowRegistry's panel meta (used by session persistence and the
+// panel-window list) stays current — needed after Save-As turns an
+// untitled buffer into a real file inside a detached panel window.
+export const PANEL_WINDOW_SYNC_META = 'panel:windowSyncMeta'
 
 // Recent Projects
 export const RECENT_PROJECTS_GET = 'recent-projects:get'
@@ -247,7 +259,6 @@ export const AUTH_OAUTH_PROMPT_REPLY = 'auth:oauthPromptReply' // renderer -> ma
 export const AUTH_OAUTH_EVENT = 'auth:oauthEvent'              // main -> renderer
 export const AUTH_SAVE_API_KEY = 'auth:saveApiKey'
 export const AUTH_DELETE = 'auth:delete'
-export const AUTH_LIST_MODELS = 'auth:listModels'
 
 // Workspace management (main process is source of truth)
 export const WORKSPACE_CREATE = 'workspace:create'

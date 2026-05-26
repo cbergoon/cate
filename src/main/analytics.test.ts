@@ -30,12 +30,17 @@ vi.mock('./logger', () => ({
 const { decideUpdateAction, sanitizeFeedbackPayload } = await import('./analytics')
 
 describe('decideUpdateAction', () => {
-  test('first launch: emits app_install and persists the current version', () => {
+  test('first launch: emits app_install, persists version, and queues prompt', () => {
     const action = decideUpdateAction('1.0.0', {})
     expect(action.kind).toBe('first_install')
     if (action.kind !== 'first_install') return
     expect(action.emit).toBe('app_install')
-    expect(action.nextState).toEqual({ lastSeenVersion: '1.0.0' })
+    expect(action.nextState).toEqual({
+      lastSeenVersion: '1.0.0',
+      pendingFeedbackForVersion: '1.0.0',
+      pendingFeedbackFromVersion: '',
+    })
+    expect(action.prompt).toEqual({ from: '', to: '1.0.0' })
   })
 
   test('same version, no pending feedback: no event, no prompt, state unchanged', () => {
@@ -87,6 +92,46 @@ describe('decideUpdateAction', () => {
     if (action.kind !== 'version_changed') return
     expect(action.from).toBe('1.0.0')
     expect(action.to).toBe('0.9.0')
+  })
+
+  test('first launch always triggers the dialog prompt', () => {
+    const action = decideUpdateAction('2.0.0', {})
+    expect(action.kind).toBe('first_install')
+    if (action.kind !== 'first_install') return
+    expect(action.prompt).toBeDefined()
+    expect(action.prompt.to).toBe('2.0.0')
+    expect(action.prompt.from).toBe('')
+    expect(action.nextState.pendingFeedbackForVersion).toBe('2.0.0')
+  })
+
+  test('major/minor version update triggers the dialog prompt', () => {
+    const action = decideUpdateAction('2.0.0', { lastSeenVersion: '1.5.0' })
+    expect(action.kind).toBe('version_changed')
+    if (action.kind !== 'version_changed') return
+    expect(action.prompt).toBeDefined()
+    expect(action.prompt!.from).toBe('1.5.0')
+    expect(action.prompt!.to).toBe('2.0.0')
+    expect(action.nextState.pendingFeedbackForVersion).toBe('2.0.0')
+    expect(action.nextState.pendingFeedbackFromVersion).toBe('1.5.0')
+  })
+
+  test('patch-only update does NOT trigger the dialog prompt', () => {
+    const action = decideUpdateAction('1.0.1', { lastSeenVersion: '1.0.0' })
+    expect(action.kind).toBe('version_changed')
+    if (action.kind !== 'version_changed') return
+    expect(action.emit).toBe('app_updated')
+    expect(action.from).toBe('1.0.0')
+    expect(action.to).toBe('1.0.1')
+    expect(action.prompt).toBeUndefined()
+    expect(action.nextState.pendingFeedbackForVersion).toBeUndefined()
+    expect(action.nextState.pendingFeedbackFromVersion).toBeUndefined()
+  })
+
+  test('normal launch (same version, no pending) does NOT trigger dialog', () => {
+    const action = decideUpdateAction('1.0.0', { lastSeenVersion: '1.0.0' })
+    expect(action.kind).toBe('no_change')
+    if (action.kind !== 'no_change') return
+    expect(action.prompt).toBeUndefined()
   })
 
   test('does not lose unrelated fields when merging state', () => {

@@ -37,6 +37,8 @@ export interface CanvasStoreState {
   viewportOffset: Point
   zoomLevel: number
   focusedNodeId: CanvasNodeId | null
+  /** Increments on every focus action — lets panels re-run focus side effects even when focusedNodeId doesn't change. */
+  focusEpoch: number
   nextZOrder: number
   nextCreationIndex: number
   containerSize: Size
@@ -300,6 +302,7 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
   viewportOffset: { x: 0, y: 0 },
   zoomLevel: ZOOM_DEFAULT,
   focusedNodeId: null,
+  focusEpoch: 0,
   nextZOrder: 0,
   nextCreationIndex: 0,
   containerSize: { width: 0, height: 0 },
@@ -497,6 +500,7 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
         },
         nextZOrder: state.nextZOrder + 1,
         focusedNodeId: id,
+        focusEpoch: state.focusEpoch + 1,
       }
     })
   },
@@ -554,6 +558,7 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
       nodes: { ...state.nodes, [id]: updated },
       nextZOrder: state.nextZOrder + 1,
       focusedNodeId: id,
+      focusEpoch: state.focusEpoch + 1,
     })
   },
 
@@ -739,6 +744,7 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
       nodes: { ...state.nodes, [nodeId]: updated },
       nextZOrder: state.nextZOrder + 1,
       focusedNodeId: nodeId,
+      focusEpoch: state.focusEpoch + 1,
     }
     if (cs.width > 0 && cs.height > 0) {
       newState.viewportOffset = {

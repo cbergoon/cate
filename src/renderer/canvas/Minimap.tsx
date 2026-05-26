@@ -341,6 +341,11 @@ const Minimap: React.FC<MinimapProps> = ({ mode = 'floating' }) => {
         return (
           <div
             key={node.id}
+            onMouseDown={(e) => {
+              e.stopPropagation()
+              e.preventDefault()
+              canvasApi.getState().focusAndCenter(node.id)
+            }}
             style={{
               position: 'absolute',
               left: toMiniX(node.origin.x),
@@ -350,6 +355,7 @@ const Minimap: React.FC<MinimapProps> = ({ mode = 'floating' }) => {
               backgroundColor: themedPanelColor(type),
               borderRadius: 1,
               opacity: 1,
+              cursor: 'pointer',
             }}
           />
         )

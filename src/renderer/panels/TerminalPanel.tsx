@@ -17,7 +17,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import type { TerminalPanelProps } from './types'
 import { terminalRegistry } from '../lib/terminalRegistry'
 import { useAppStore } from '../stores/appStore'
-import { useCanvasStoreContext } from '../stores/CanvasStoreContext'
+import { useCanvasStoreContext, useCanvasStoreApi } from '../stores/CanvasStoreContext'
 import { TerminalUrlPrompt } from './TerminalUrlPrompt'
 
 // ---------------------------------------------------------------------------
@@ -104,6 +104,7 @@ export default function TerminalPanel({
   rootPathRef.current = rootPath
 
   const isFocused = useCanvasStoreContext((s) => s.focusedNodeId === nodeId)
+  const canvasApi = useCanvasStoreApi()
   const zoomLevel = useCanvasStoreContext((s) => s.zoomLevel)
 
   // -------------------------------------------------------------------------
@@ -342,23 +343,62 @@ export default function TerminalPanel({
   // -------------------------------------------------------------------------
 
   useEffect(() => {
-    if (!isFocused) return
-    const entry = terminalRegistry.getEntry(panelId)
-    if (!entry) return
+    let cancelled = false
 
-    const textarea = entry.terminal.element?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
-    if (textarea) {
-      textarea.focus({ preventScroll: true })
-    } else {
-      entry.terminal.focus()
+    const runFocus = () => {
+      let waitAttempts = 0
+      let recheckAttempts = 0
+      let scrollRestored = false
+      let myCancelled = false
+      const tick = () => {
+        if (cancelled || myCancelled) return
+        const entry = terminalRegistry.getEntry(panelId)
+        const el = entry?.terminal.element
+        // Skip when xterm DOM is not attached: IntersectionObserver can briefly
+        // detach the element during mount on a virtualized panel just brought
+        // into view via the minimap.
+        if (!entry || !el || !el.isConnected) {
+          if (waitAttempts++ < 80) setTimeout(tick, 25)
+          return
+        }
+        const textarea = el.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
+        const target: HTMLElement = textarea ?? el
+        if (document.activeElement !== target) {
+          if (textarea) textarea.focus({ preventScroll: true })
+          else entry.terminal.focus()
+        }
+        if (!scrollRestored) {
+          scrollRestored = true
+          terminalRegistry.restoreScroll(panelId)
+          requestAnimationFrame(() => terminalRegistry.restoreScroll(panelId))
+        }
+        // Re-check for ~500ms after first success to survive a detach/reattach
+        // race from the IntersectionObserver right after mount.
+        if (recheckAttempts++ < 20) setTimeout(tick, 25)
+      }
+      tick()
+      return () => { myCancelled = true }
     }
 
-    // Restore scroll position from the continuously-tracked value in the
-    // registry. This survives any scroll resets that may have happened
-    // between losing and regaining focus.
-    terminalRegistry.restoreScroll(panelId)
-    requestAnimationFrame(() => terminalRegistry.restoreScroll(panelId))
-  }, [isFocused, panelId])
+    // Initial focus when this panel becomes the focused node.
+    let stopRun: (() => void) | undefined
+    if (isFocused) stopRun = runFocus()
+
+    // Imperative subscription to focusEpoch — re-runs focus when the same node
+    // is re-focused (no React re-render of this panel on unrelated focus actions).
+    const unsubscribe = canvasApi.subscribe((s, prev) => {
+      if (s.focusEpoch === prev.focusEpoch) return
+      if (s.focusedNodeId !== nodeId) return
+      stopRun?.()
+      stopRun = runFocus()
+    })
+
+    return () => {
+      cancelled = true
+      stopRun?.()
+      unsubscribe()
+    }
+  }, [isFocused, panelId, nodeId, canvasApi])
 
   // -------------------------------------------------------------------------
   // Crisp rendering at high canvas zoom

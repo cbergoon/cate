@@ -6,7 +6,7 @@
 //   • QueueBadges      — small chips for pending steering / follow-up messages
 //   • ExtensionStatusBar — extension setStatus() text (footer)
 //   • ExtensionWidget   — extension setWidget() lines (above/below editor)
-//   • NotificationsStack — extension notify() toasts
+
 //   • ExtensionDialog   — in-panel renderer for extension_ui_request select /
 //     confirm / input / editor (the only modal-like surface, lives inside the
 //     panel per the "no modal dialogs for auth" guidance)
@@ -14,11 +14,12 @@
 //   • ThinkingLevelPicker — reasoning level dropdown
 // =============================================================================
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
-  Brain,
+
   Image as ImageIcon,
-  Info,
+
   Spinner,
   Stack,
   Warning,
@@ -33,7 +34,7 @@ import type {
 } from '../../shared/types'
 import type {
   CompactionState,
-  ExtensionNotification,
+
   ExtensionStatusEntry,
   ExtensionWidgetEntry,
   RetryState,
@@ -258,55 +259,6 @@ export function ExtensionWidget({
   )
 }
 
-export function NotificationsStack({
-  items,
-  onDismiss,
-}: {
-  items: ExtensionNotification[]
-  onDismiss: (id: string) => void
-}) {
-  useEffect(() => {
-    // Info notifications auto-dismiss after 5 seconds; warning/error stay
-    // until clicked so the user actually sees them.
-    const timers: Array<ReturnType<typeof setTimeout>> = []
-    for (const n of items) {
-      if (n.notifyType !== 'info') continue
-      timers.push(setTimeout(() => onDismiss(n.id), 5000))
-    }
-    return () => { timers.forEach(clearTimeout) }
-  }, [items, onDismiss])
-
-  if (items.length === 0) return null
-  return (
-    <div className="absolute bottom-3 right-3 z-10 space-y-1.5 max-w-[280px]">
-      {items.map((n) => {
-        const tone =
-          n.notifyType === 'error'
-            ? 'bg-red-500/95 text-white'
-            : n.notifyType === 'warning'
-            ? 'bg-amber-500/95 text-black'
-            : 'bg-surface-3/95 text-primary border border-white/10'
-        const Icon = n.notifyType === 'error' ? WarningCircle : n.notifyType === 'warning' ? Warning : Info
-        return (
-          <div
-            key={n.id}
-            className={`flex items-start gap-2 px-3 py-2 rounded-lg shadow-lg backdrop-blur text-[12px] ${tone}`}
-          >
-            <Icon size={13} className="shrink-0 mt-[1px]" />
-            <span className="flex-1 whitespace-pre-wrap break-words">{n.message}</span>
-            <button
-              onClick={() => onDismiss(n.id)}
-              className="opacity-70 hover:opacity-100 shrink-0"
-              aria-label="Dismiss"
-            >
-              <X size={11} />
-            </button>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
 
 // -----------------------------------------------------------------------------
 // Extension dialog (in-panel)
@@ -569,6 +521,51 @@ export async function readFileAsImage(file: File): Promise<AgentImageAttachment 
 // -----------------------------------------------------------------------------
 
 const THINKING_LEVELS: AgentThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
+const THINKING_BARS: Record<AgentThinkingLevel, number> = { off: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5 }
+const TOTAL_BARS = 5
+
+function ThinkingBars({ count, size = 10 }: { count: number; size?: number }) {
+  const barW = 2
+  const gap = 1
+  const totalW = TOTAL_BARS * barW + (TOTAL_BARS - 1) * gap
+  return (
+    <svg width={totalW} height={size} className="shrink-0">
+      {Array.from({ length: TOTAL_BARS }, (_, i) => {
+        const h = ((i + 1) / TOTAL_BARS) * size
+        const x = i * (barW + gap)
+        return (
+          <rect
+            key={i}
+            x={x}
+            y={size - h}
+            width={barW}
+            height={h}
+            rx={0.5}
+            fill="currentColor"
+            opacity={i < count ? 1 : 0.2}
+          />
+        )
+      })}
+    </svg>
+  )
+}
+
+function useNodePortalTarget(ref: React.RefObject<Element | null>) {
+  const getTarget = useCallback(
+    () => ref.current?.closest('[data-node-id]') as HTMLElement | null,
+    [ref],
+  )
+  const toLocal = useCallback(
+    (viewport: { top: number; left: number }) => {
+      const target = getTarget()
+      if (!target) return viewport
+      const tr = target.getBoundingClientRect()
+      return { top: viewport.top - tr.top, left: viewport.left - tr.left }
+    },
+    [getTarget],
+  )
+  return { getTarget, toLocal }
+}
 
 export function ThinkingLevelPicker({
   level,
@@ -580,43 +577,65 @@ export function ThinkingLevelPicker({
   disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const wrapRef = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
+  const { getTarget, toLocal } = useNodePortalTarget(btnRef)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null)
   useEffect(() => {
     if (!open) return
+    setPortalTarget(getTarget())
     const handler = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false)
+      if (btnRef.current?.contains(e.target as Node)) return
+      if (popoverRef.current?.contains(e.target as Node)) return
+      setOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [open])
+  }, [open, getTarget])
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current) return
+    const r = btnRef.current.getBoundingClientRect()
+    const popW = 160
+    let left = r.right - popW
+    if (left < 4) left = 4
+    setPos(toLocal({ top: r.top - 4, left }))
+  }, [open, toLocal])
   const current = level ?? 'medium'
-  const short = current === 'minimal' ? 'min' : current === 'medium' ? 'med' : current
+  const bars = THINKING_BARS[current]
   return (
-    <div ref={wrapRef} className="relative">
+    <>
       <button
+        ref={btnRef}
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-0.5 px-1.5 py-1 rounded-md text-[10.5px] text-muted/70 hover:text-primary hover:bg-white/5 disabled:opacity-50"
-        title={`Reasoning effort — ${current}. Click to change (off/minimal/low/medium/high/xhigh).`}
+        className="flex items-center gap-1 px-1.5 py-1 rounded-md text-[10.5px] text-muted/70 hover:text-primary hover:bg-white/5 disabled:opacity-50"
+        title={`Reasoning effort — ${current}`}
       >
-        <Brain size={12} />
-        <span className="font-mono">{short}</span>
+        <ThinkingBars count={bars} />
       </button>
-      {open && (
-        <div className="absolute bottom-full right-0 mb-1 w-[140px] rounded-lg border border-white/10 bg-surface-4/98 backdrop-blur-xl shadow-[0_12px_32px_rgba(0,0,0,0.45)] z-30">
+      {open && pos && portalTarget && createPortal(
+        <div
+          ref={popoverRef}
+          className="absolute w-[160px] rounded-lg border border-white/10 bg-surface-4/98 backdrop-blur-xl shadow-[0_12px_32px_rgba(0,0,0,0.45)] z-[9999] overflow-hidden"
+          style={{ top: pos.top, left: pos.left, transform: 'translateY(-100%)' }}
+        >
+          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider font-semibold text-muted/70 border-b border-white/5">Thinking level</div>
           {THINKING_LEVELS.map((lv) => (
             <button
               key={lv}
               onClick={() => { setOpen(false); onChange(lv) }}
-              className={`w-full text-left px-3 py-1.5 text-[12px] capitalize ${
+              className={`w-full flex items-center justify-between px-3 py-1.5 text-[12px] capitalize ${
                 lv === current ? 'bg-white/10 text-primary' : 'text-primary hover:bg-white/5'
               }`}
             >
-              {lv}
+              <span>{lv}</span>
+              <ThinkingBars count={THINKING_BARS[lv]} />
             </button>
           ))}
-        </div>
+        </div>,
+        portalTarget,
       )}
-    </div>
+    </>
   )
 }

@@ -78,3 +78,69 @@ describe('canvasStore.addNode — canvas-on-canvas is rejected', () => {
     expect(Object.keys(store.getState().nodes)).toHaveLength(0)
   })
 })
+
+// focusEpoch is the signal panels watch to re-fire focus side effects when the
+// same node is re-focused (e.g. minimap click on the already-focused node).
+// Without it, useEffect deps on `isFocused` alone would not re-run.
+describe('canvasStore — focusEpoch bumps on focus actions', () => {
+  it('starts at 0', () => {
+    const store = createCanvasStore()
+    expect(store.getState().focusEpoch).toBe(0)
+  })
+
+  it('focusNode increments focusEpoch each call, even for the already-focused node', () => {
+    const store = createCanvasStore()
+    const id = store.getState().addNode('p1', 'terminal', { x: 0, y: 0 }, { width: 100, height: 80 })
+
+    const before = store.getState().focusEpoch
+    store.getState().focusNode(id)
+    const afterFirst = store.getState().focusEpoch
+    store.getState().focusNode(id)
+    const afterSecond = store.getState().focusEpoch
+
+    expect(afterFirst).toBe(before + 1)
+    expect(afterSecond).toBe(before + 2)
+    expect(store.getState().focusedNodeId).toBe(id)
+  })
+
+  it('focusAndCenter increments focusEpoch', () => {
+    const store = createCanvasStore()
+    const id = store.getState().addNode('p1', 'terminal', { x: 0, y: 0 }, { width: 100, height: 80 })
+    store.getState().setContainerSize({ width: 800, height: 600 })
+
+    const before = store.getState().focusEpoch
+    store.getState().focusAndCenter(id)
+    expect(store.getState().focusEpoch).toBe(before + 1)
+    expect(store.getState().focusedNodeId).toBe(id)
+  })
+
+  it('focusAndCenter bumps focusEpoch even when called twice on the same node', () => {
+    const store = createCanvasStore()
+    const id = store.getState().addNode('p1', 'terminal', { x: 0, y: 0 }, { width: 100, height: 80 })
+    store.getState().setContainerSize({ width: 800, height: 600 })
+
+    store.getState().focusAndCenter(id)
+    const after1 = store.getState().focusEpoch
+    store.getState().focusAndCenter(id)
+    const after2 = store.getState().focusEpoch
+
+    expect(after2).toBe(after1 + 1)
+  })
+
+  it('focusNode on a missing nodeId does not bump focusEpoch', () => {
+    const store = createCanvasStore()
+    const before = store.getState().focusEpoch
+    store.getState().focusNode('does-not-exist')
+    expect(store.getState().focusEpoch).toBe(before)
+  })
+
+  it('toggleMaximize bumps focusEpoch', () => {
+    const store = createCanvasStore()
+    const id = store.getState().addNode('p1', 'terminal', { x: 0, y: 0 }, { width: 100, height: 80 })
+    store.getState().setContainerSize({ width: 800, height: 600 })
+
+    const before = store.getState().focusEpoch
+    store.getState().toggleMaximize(id, { width: 800, height: 600 })
+    expect(store.getState().focusEpoch).toBe(before + 1)
+  })
+})
