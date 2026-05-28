@@ -416,6 +416,11 @@ export const useStatusStore = create<StatusStore>((set, get) => ({
   },
 
   unregisterTerminal(terminalId) {
+    // Drop module-level tracking in the process monitor so its rising-edge
+    // map can't grow without bound across long sessions.
+    void import('../hooks/useProcessMonitor').then(({ forgetTerminalForProcessMonitor }) => {
+      forgetTerminalForProcessMonitor(terminalId)
+    })
     set((state) => {
       const { [terminalId]: _removed, ...remainingMap } = state.terminalWorkspaceMap
 

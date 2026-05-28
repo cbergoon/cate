@@ -52,7 +52,7 @@ export function useDockTabActions(params: DockTabActionsParams) {
     const trimmed = renameValue.trim()
     if (trimmed) {
       const wsId = workspaceId ?? useAppStore.getState().selectedWorkspaceId
-      if (wsId) useAppStore.getState().updatePanelTitle(wsId, panelId, trimmed)
+      if (wsId) useAppStore.getState().renamePanelByUser(wsId, panelId, trimmed)
     }
     setRenameId(null)
   }

@@ -14,7 +14,8 @@ import { SearchAddon } from '@xterm/addon-search'
 import { useStatusStore } from '../stores/statusStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { terminalRestoreData, replayTerminalLog } from './session'
-import { awaitWorkspaceSync } from '../stores/appStore'
+import { awaitWorkspaceSync, useAppStore } from '../stores/appStore'
+import { extractAgentTitleSegment } from './agentTitleParser'
 import { scanTerminalChunkForUrls, clearTerminalUrlBuffer } from './terminalUrlAutoOpen'
 import { getResolvedTheme, subscribeTheme, type ResolvedTheme } from './themeManager'
 
@@ -478,6 +479,21 @@ async function getOrCreate(panelId: string, opts: CreateOpts): Promise<RegistryE
     })
     cleanupListeners.push(removeExitListener)
 
+    // 7b. OSC 0/1/2 — agent CLIs write their live status into the terminal
+    // title. Forward the parsed middle segment to the panel title unless the
+    // user has manually renamed the tab.
+    const titleDisposable = terminal.onTitleChange((raw) => {
+      const parsed = extractAgentTitleSegment(raw)
+      if (!parsed) return
+      // Defer to a microtask so OSC sequences arriving during xterm.write()
+      // (e.g. scrollback replay on attach) don't run set() inside React's
+      // commit phase, which would trip "Maximum update depth".
+      queueMicrotask(() => {
+        useAppStore.getState().updatePanelTitleFromAgent(opts.workspaceId, panelId, parsed)
+      })
+    })
+    cleanupListeners.push(() => titleDisposable.dispose())
+
     // 8. Handle modified special keys that xterm.js doesn't translate to
     //    distinct escape sequences (e.g. Ctrl+Enter, Shift+Enter, etc.).
     //    We send CSI u (fixterms/kitty) encoded sequences directly to the PTY
@@ -649,6 +665,17 @@ async function reconnectTerminal(
     }
   })
   cleanupListeners.push(removeExitListener)
+
+  // OSC 0/1/2 — same forwarding as the fresh-spawn path; reconnects need the
+  // listener too so titles keep tracking the agent after attach().
+  const titleDisposable = terminal.onTitleChange((raw) => {
+    const parsed = extractAgentTitleSegment(raw)
+    if (!parsed) return
+    queueMicrotask(() => {
+      useAppStore.getState().updatePanelTitleFromAgent(opts.workspaceId, panelId, parsed)
+    })
+  })
+  cleanupListeners.push(() => titleDisposable.dispose())
 
   // CSI u key handler (same as getOrCreate)
   const CSI_U_KEYS: Record<string, number> = {

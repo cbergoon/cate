@@ -1,7 +1,20 @@
 import { useEffect } from 'react'
 import { useStatusStore } from '../stores/statusStore'
 import { useAppStore } from '../stores/appStore'
+import { terminalRegistry } from '../lib/terminalRegistry'
 import type { TerminalActivity } from '../../shared/types'
+
+/** Last agent name we observed per terminal — module-level so we only push a
+ *  panel-title fallback on the rising edge (null → "Codex") instead of every
+ *  activity tick. Cleared when the renderer unregisters the terminal so the
+ *  map stays bounded across long dev sessions. */
+const lastAgentName: Map<string, string | null> = new Map()
+
+/** Drop tracking state for a terminal. Wired into `statusStore.unregisterTerminal`
+ *  so the module-level map can't grow without bound. */
+export function forgetTerminalForProcessMonitor(terminalId: string): void {
+  lastAgentName.delete(terminalId)
+}
 
 export function useProcessMonitor(workspaceId: string): void {
   useEffect(() => {
@@ -33,6 +46,19 @@ export function useProcessMonitor(workspaceId: string): void {
         store().setAgentPresent(actualWorkspaceId, terminalId, agentPresent)
         store().setAgentName(actualWorkspaceId, terminalId, agentName)
         store().setAgentStreaming(actualWorkspaceId, terminalId, isStreaming)
+
+        // Fallback title: agents that don't emit OSC 0/1/2 (e.g. Codex) leave
+        // the default "Terminal N" string in the tab. Push the agent name as
+        // a starter title on the rising edge so the user at least sees which
+        // agent is running. Agents that DO emit OSC will immediately overwrite
+        // this with the live status. `updatePanelTitleFromAgent` skips when
+        // the user has manually renamed the tab.
+        const prevAgent = lastAgentName.get(terminalId) ?? null
+        if (agentName && agentName !== prevAgent) {
+          const panelId = terminalRegistry.panelIdForPty(terminalId) ?? terminalId
+          useAppStore.getState().updatePanelTitleFromAgent(actualWorkspaceId, panelId, agentName)
+        }
+        lastAgentName.set(terminalId, agentName)
       },
     )
 
