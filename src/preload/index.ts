@@ -460,7 +460,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
       terminalId: string,
       activity: unknown,
       agentName: unknown,
-      subprocessActive: unknown,
       agentPresent: unknown,
     ) => void,
   ): () => void {
@@ -469,10 +468,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       terminalId: string,
       activity: unknown,
       agentName: unknown,
-      subprocessActive: unknown,
       agentPresent: unknown,
     ): void => {
-      callback(terminalId, activity, agentName, subprocessActive, agentPresent)
+      callback(terminalId, activity, agentName, agentPresent)
     }
     ipcRenderer.on(SHELL_ACTIVITY_UPDATE, listener)
     return () => {

@@ -15,3 +15,6 @@ test-results/
 
 # Cate workspace
 .cate/
+
+# Local logo scratch dir
+_logos/
