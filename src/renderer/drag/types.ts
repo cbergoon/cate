@@ -69,12 +69,18 @@ export type DropTarget =
       canvasStoreApi: StoreApi<CanvasStore>
       nodeId: string
       origin: Point
+      /** When set (snap-to-grid active), the screen-px rect the ghost should
+       *  render at so the preview snaps with the committed origin instead of
+       *  free-tracking the cursor. */
+      ghostScreen?: { left: number; top: number; width: number; height: number }
     }
   | {
       kind: 'canvas-add'
       canvasStoreApi: StoreApi<CanvasStore>
       origin: Point
       size: Size
+      /** See canvas-reposition.ghostScreen. */
+      ghostScreen?: { left: number; top: number; width: number; height: number }
     }
   | {
       kind: 'dock-split'

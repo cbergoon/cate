@@ -20,8 +20,13 @@ import { PANEL_DEFAULT_SIZES, PANEL_MINIMUM_SIZES } from '../../shared/types'
 // Grid snapping
 // -----------------------------------------------------------------------------
 
+/** Canvas-space spacing of the snap/background grid, in canvas units. Shared by
+ *  the visual grid (CanvasGrid), auto-placement, and the snap-to-grid feature so
+ *  snapped panels line up with the dots/lines the user actually sees. */
+export const CANVAS_GRID_SIZE = 20
+
 /** Round a point to the nearest grid intersection. */
-export function snapToGrid(point: Point, gridSize = 20): Point {
+export function snapToGrid(point: Point, gridSize = CANVAS_GRID_SIZE): Point {
   return {
     x: Math.round(point.x / gridSize) * gridSize,
     y: Math.round(point.y / gridSize) * gridSize,
@@ -32,7 +37,7 @@ export function snapToGrid(point: Point, gridSize = 20): Point {
  * Snap a size so that the bottom-right corner lands on a grid line.
  * The resulting size is at least one gridSize unit in each dimension.
  */
-export function snapSize(size: Size, origin: Point, gridSize = 20): Size {
+export function snapSize(size: Size, origin: Point, gridSize = CANVAS_GRID_SIZE): Size {
   const bottomRight: Point = {
     x: origin.x + size.width,
     y: origin.y + size.height,

@@ -783,6 +783,9 @@ export interface AppSettings {
   autoFocusLargestVisibleNode: boolean
   /** Background pattern drawn on the canvas. */
   canvasGridStyle: CanvasGridStyle
+  /** Snap panels to the canvas grid while dragging and resizing, so windows
+   *  align to a uniform lattice. Hold Alt during a drag/resize to bypass it. */
+  snapToGrid: boolean
 
   // Terminal
   terminalFontFamily: string
@@ -847,6 +850,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   zoomSpeed: 1.0,
   autoFocusLargestVisibleNode: false,
   canvasGridStyle: 'dots',
+  snapToGrid: false,
 
   // Terminal
   terminalFontFamily: '',

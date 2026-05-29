@@ -8,7 +8,8 @@ import { useCallback, useRef } from 'react'
 import type { StoreApi } from 'zustand'
 import type { CanvasStore } from '../stores/canvasStore'
 import { useAppStore } from '../stores/appStore'
-import { minimumSize, findSharedBorders } from '../canvas/layoutEngine'
+import { useSettingsStore } from '../stores/settingsStore'
+import { minimumSize, findSharedBorders, CANVAS_GRID_SIZE } from '../canvas/layoutEngine'
 import type { SharedBorder } from '../canvas/layoutEngine'
 import type { PanelType, Point, Size } from '../../shared/types'
 import { detectEdge, getCursorForEdge } from './resizeEdge'
@@ -150,18 +151,38 @@ export function useNodeResize(
 
         // Track the cursor 1:1 during the drag — the moving edge stays glued
         // to the pointer.
-        {
-          const movesRightEdge =
-            rs.edge === 'right' || rs.edge === 'topRight' || rs.edge === 'bottomRight'
-          const movesLeftEdge =
-            rs.edge === 'left' || rs.edge === 'topLeft' || rs.edge === 'bottomLeft'
-          const movesBottomEdge =
-            rs.edge === 'bottom' || rs.edge === 'bottomLeft' || rs.edge === 'bottomRight'
-          const movesTopEdge =
-            rs.edge === 'top' || rs.edge === 'topLeft' || rs.edge === 'topRight'
+        const movesRightEdge =
+          rs.edge === 'right' || rs.edge === 'topRight' || rs.edge === 'bottomRight'
+        const movesLeftEdge =
+          rs.edge === 'left' || rs.edge === 'topLeft' || rs.edge === 'bottomLeft'
+        const movesBottomEdge =
+          rs.edge === 'bottom' || rs.edge === 'bottomLeft' || rs.edge === 'bottomRight'
+        const movesTopEdge =
+          rs.edge === 'top' || rs.edge === 'topLeft' || rs.edge === 'topRight'
 
-          if (!movesRightEdge && !movesLeftEdge) deltaX = 0
-          if (!movesBottomEdge && !movesTopEdge) deltaY = 0
+        if (!movesRightEdge && !movesLeftEdge) deltaX = 0
+        if (!movesBottomEdge && !movesTopEdge) deltaY = 0
+
+        // Snap-to-grid: pull the moving edge onto the nearest grid line by
+        // adjusting the delta (Alt bypasses). Snapping the delta — rather than
+        // the final geometry — keeps the shared-border neighbor math, which is
+        // all derived from this delta below, consistent with the primary node.
+        if (useSettingsStore.getState().snapToGrid && !ev.altKey) {
+          const g = CANVAS_GRID_SIZE
+          if (movesRightEdge) {
+            const right = rs.startOrigin.x + rs.startSize.width + deltaX
+            deltaX = Math.round(right / g) * g - (rs.startOrigin.x + rs.startSize.width)
+          } else if (movesLeftEdge) {
+            const left = rs.startOrigin.x + deltaX
+            deltaX = Math.round(left / g) * g - rs.startOrigin.x
+          }
+          if (movesBottomEdge) {
+            const bottom = rs.startOrigin.y + rs.startSize.height + deltaY
+            deltaY = Math.round(bottom / g) * g - (rs.startOrigin.y + rs.startSize.height)
+          } else if (movesTopEdge) {
+            const top = rs.startOrigin.y + deltaY
+            deltaY = Math.round(top / g) * g - rs.startOrigin.y
+          }
         }
 
         let newOriginX = rs.startOrigin.x

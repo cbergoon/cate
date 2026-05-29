@@ -22,6 +22,8 @@ import { findNodeIdForDockStore } from '../panels/nodeDockRegistry'
 import { getDefaultSession } from './session'
 import { cursorToCanvasOrigin } from './geometry'
 import { findTabStackAcrossZones } from '../stores/dockTreeUtils'
+import { snapToGrid, CANVAS_GRID_SIZE } from '../canvas/layoutEngine'
+import { canvasToView } from '../lib/coordinates'
 import type { WindowDockState } from '../../shared/types'
 
 // -----------------------------------------------------------------------------
@@ -69,7 +71,8 @@ export const defaultDropEnvironment: DropEnvironment = {
   },
 }
 
-/** Resolve cursor + source into a typed DropTarget. */
+/** Resolve cursor + source into a typed DropTarget. When `snap` is true, canvas
+ *  drops are snapped to the canvas grid (and carry a snapped ghost rect). */
 export function resolveDrop(
   cursor: { client: Point; screen: Point; insideWindow: boolean },
   source: DragSource,
@@ -77,6 +80,7 @@ export function resolveDrop(
   ghostSize: Size,
   panelType: PanelType,
   env: DropEnvironment = defaultDropEnvironment,
+  snap = false,
 ): DropTarget | null {
   if (!cursor.insideWindow) {
     return { kind: 'detach', screen: cursor.screen }
@@ -87,7 +91,7 @@ export function resolveDrop(
   if (dockTarget) return dockTarget
 
   // --- 2. Canvas surface under cursor ---
-  const canvasTarget = resolveCanvasHit(cursor, source, grab, ghostSize, env)
+  const canvasTarget = resolveCanvasHit(cursor, source, grab, ghostSize, env, snap)
   if (canvasTarget) return canvasTarget
 
   return null
@@ -177,6 +181,7 @@ function resolveCanvasHit(
   grab: Point,
   ghostSize: Size,
   env: DropEnvironment,
+  snap: boolean,
 ): DropTarget | null {
   const hit = env.canvasAtCursor(cursor.client)
   if (!hit) return null
@@ -186,13 +191,28 @@ function resolveCanvasHit(
     viewportOffset: Point
   }
 
-  const origin = cursorToCanvasOrigin(
+  const rawOrigin = cursorToCanvasOrigin(
     cursor,
     rect,
     state.zoomLevel,
     state.viewportOffset,
     grab,
   )
+  const origin = snap ? snapToGrid(rawOrigin, CANVAS_GRID_SIZE) : rawOrigin
+
+  // When snapping, precompute the screen-px ghost rect from the snapped origin
+  // so the preview lands exactly where the drop will commit (the Overlay
+  // free-tracks the cursor otherwise).
+  let ghostScreen: { left: number; top: number; width: number; height: number } | undefined
+  if (snap) {
+    const viewOrigin = canvasToView(origin, state.zoomLevel, state.viewportOffset)
+    ghostScreen = {
+      left: rect.left + viewOrigin.x,
+      top: rect.top + viewOrigin.y,
+      width: ghostSize.width * state.zoomLevel,
+      height: ghostSize.height * state.zoomLevel,
+    }
+  }
 
   // Source is a canvas-node already on this canvas → reposition (move existing).
   if (source.origin.kind === 'canvas-node' && source.origin.canvasStoreApi === canvasStoreApi) {
@@ -201,6 +221,7 @@ function resolveCanvasHit(
       canvasStoreApi: source.origin.canvasStoreApi,
       nodeId: source.origin.nodeId,
       origin,
+      ghostScreen,
     }
   }
 
@@ -214,5 +235,6 @@ function resolveCanvasHit(
     canvasStoreApi,
     origin,
     size: ghostSize,
+    ghostScreen,
   }
 }

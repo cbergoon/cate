@@ -500,6 +500,85 @@ describe('resolveDrop — canvas surface', () => {
     })
   })
 
+  it('snap=true rounds the reposition origin to the grid and attaches a snapped ghost rect', () => {
+    // grab {50,25} → raw origin {250,175}; nearest grid (20) → {260,180}.
+    const cursor = { x: 300, y: 200 }
+    const t = resolveDrop(
+      { client: cursor, screen: cursor, insideWindow: true },
+      NODE_SOURCE_A,
+      { x: 50, y: 25 },
+      ghostSize,
+      'editor',
+      env({
+        canvasAt: () => ({
+          panelId: 'canvas-A',
+          rect: rect(0, 0, 1000, 800),
+          canvasStoreApi: CANVAS_STORE_A,
+        }),
+      }),
+      true,
+    )
+    expect(t).toEqual({
+      kind: 'canvas-reposition',
+      canvasStoreApi: CANVAS_STORE_A,
+      nodeId: 'node-A',
+      origin: { x: 260, y: 180 },
+      // zoom=1, offset=0, rect origin (0,0) → ghost screen == snapped origin.
+      ghostScreen: { left: 260, top: 180, width: 320, height: 200 },
+    })
+  })
+
+  it('snap=true snaps canvas-add origin and scales the ghost rect by target zoom', () => {
+    // zoom=2, offset {30,40}, rect {10,20}; grab 0.
+    // localView=(290,180); canvasCursor=((290-30)/2,(180-40)/2)=(130,70).
+    // snapped origin → (140,80); viewOrigin = 140*2+30, 80*2+40 = (310,200);
+    // ghost left/top = rect.left+view = (320,220); size = ghostSize*2.
+    const cursor = { x: 300, y: 200 }
+    const zoomed = fakeCanvasStore(2, { x: 30, y: 40 })
+    const t = resolveDrop(
+      { client: cursor, screen: cursor, insideWindow: true },
+      { ...NODE_SOURCE_A, origin: { kind: 'canvas-node', canvasStoreApi: CANVAS_STORE_B, nodeId: 'node-on-B' } },
+      { x: 0, y: 0 },
+      ghostSize,
+      'editor',
+      env({
+        canvasAt: () => ({
+          panelId: 'canvas-Z',
+          rect: rect(10, 20, 1000, 800),
+          canvasStoreApi: zoomed,
+        }),
+      }),
+      true,
+    )
+    expect(t).toEqual({
+      kind: 'canvas-add',
+      canvasStoreApi: zoomed,
+      origin: { x: 140, y: 80 },
+      size: ghostSize,
+      ghostScreen: { left: 320, top: 220, width: 640, height: 400 },
+    })
+  })
+
+  it('snap defaults to false — no ghostScreen, raw origin preserved', () => {
+    const cursor = { x: 311, y: 207 }
+    const t = resolveDrop(
+      { client: cursor, screen: cursor, insideWindow: true },
+      NODE_SOURCE_A,
+      { x: 0, y: 0 },
+      ghostSize,
+      'editor',
+      env({
+        canvasAt: () => ({
+          panelId: 'canvas-A',
+          rect: rect(0, 0, 1000, 800),
+          canvasStoreApi: CANVAS_STORE_A,
+        }),
+      }),
+    )
+    expect(t).toMatchObject({ kind: 'canvas-reposition', origin: { x: 311, y: 207 } })
+    expect((t as { ghostScreen?: unknown }).ghostScreen).toBeUndefined()
+  })
+
   it('two adjacent canvases — picks the one canvasAtCursor returns', () => {
     const cursor = { x: 50, y: 50 }
     const t = resolveDrop(

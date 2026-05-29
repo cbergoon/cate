@@ -28,7 +28,15 @@ export default function DragOverlay() {
   // keeps the ghost size + grab offset consistent throughout the drag — both
   // mirror the source visually regardless of which canvas/dock the cursor
   // currently hovers over.
-  const rect = ghostScreenRect(cursor.client, grab, ghostSize, ghostZoom)
+  //
+  // When snap-to-grid is active, a canvas target carries a precomputed
+  // `ghostScreen` rect (the snapped landing position) — render the ghost there
+  // so the preview matches the committed origin instead of free-tracking.
+  const snappedRect =
+    target && (target.kind === 'canvas-reposition' || target.kind === 'canvas-add')
+      ? target.ghostScreen
+      : undefined
+  const rect = snappedRect ?? ghostScreenRect(cursor.client, grab, ghostSize, ghostZoom)
 
   return createPortal(
     <div data-drag-overlay="true" style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 10000 }}>
