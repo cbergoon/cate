@@ -49,6 +49,50 @@ export function snapSize(size: Size, origin: Point, gridSize = CANVAS_GRID_SIZE)
   }
 }
 
+/** Which edges a resize gesture is moving. Cardinal edges set one flag; corners
+ *  set one horizontal and one vertical flag. */
+export interface MovingEdges {
+  left: boolean
+  right: boolean
+  top: boolean
+  bottom: boolean
+}
+
+/**
+ * Adjust a resize delta so the moving edge(s) land on the nearest grid line,
+ * keeping the opposite (fixed) edge put. Pure counterpart to the geometry in
+ * useNodeResize — snapping the delta (rather than the final rect) lets the
+ * shared-border neighbor math, which is derived from the same delta, stay
+ * consistent with the primary node.
+ */
+export function snapResizeDelta(
+  moving: MovingEdges,
+  startOrigin: Point,
+  startSize: Size,
+  delta: Point,
+  gridSize = CANVAS_GRID_SIZE,
+): Point {
+  let dx = delta.x
+  let dy = delta.y
+  const round = (v: number) => Math.round(v / gridSize) * gridSize
+
+  if (moving.right) {
+    const right = startOrigin.x + startSize.width + dx
+    dx = round(right) - (startOrigin.x + startSize.width)
+  } else if (moving.left) {
+    dx = round(startOrigin.x + dx) - startOrigin.x
+  }
+
+  if (moving.bottom) {
+    const bottom = startOrigin.y + startSize.height + dy
+    dy = round(bottom) - (startOrigin.y + startSize.height)
+  } else if (moving.top) {
+    dy = round(startOrigin.y + dy) - startOrigin.y
+  }
+
+  return { x: dx, y: dy }
+}
+
 // -----------------------------------------------------------------------------
 // Edge snapping
 // -----------------------------------------------------------------------------
@@ -170,7 +214,7 @@ export function snapToEdges(
 export function snap(
   rect: Rect,
   neighbors: Rect[],
-  gridSize = 20,
+  gridSize = CANVAS_GRID_SIZE,
   edgeThreshold = 8,
 ): Point {
   const gridOrigin = snapToGrid(rect.origin, gridSize)
@@ -212,7 +256,7 @@ export function findFreePosition(
   near: Point | null,
   existingRects: Rect[],
   panelType: PanelType,
-  gridSize = 20,
+  gridSize = CANVAS_GRID_SIZE,
 ): Point {
   if (existingRects.length === 0) {
     return { x: 100, y: 100 }

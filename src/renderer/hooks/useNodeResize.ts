@@ -9,7 +9,7 @@ import type { StoreApi } from 'zustand'
 import type { CanvasStore } from '../stores/canvasStore'
 import { useAppStore } from '../stores/appStore'
 import { useSettingsStore } from '../stores/settingsStore'
-import { minimumSize, findSharedBorders, CANVAS_GRID_SIZE } from '../canvas/layoutEngine'
+import { minimumSize, findSharedBorders, snapResizeDelta } from '../canvas/layoutEngine'
 import type { SharedBorder } from '../canvas/layoutEngine'
 import type { PanelType, Point, Size } from '../../shared/types'
 import { detectEdge, getCursorForEdge } from './resizeEdge'
@@ -163,26 +163,18 @@ export function useNodeResize(
         if (!movesRightEdge && !movesLeftEdge) deltaX = 0
         if (!movesBottomEdge && !movesTopEdge) deltaY = 0
 
-        // Snap-to-grid: pull the moving edge onto the nearest grid line by
-        // adjusting the delta (Alt bypasses). Snapping the delta — rather than
-        // the final geometry — keeps the shared-border neighbor math, which is
-        // all derived from this delta below, consistent with the primary node.
+        // Snap-to-grid: pull the moving edge onto the nearest grid line (Alt
+        // bypasses). Done on the delta so the shared-border neighbor math below,
+        // which derives from this delta, stays consistent with the primary node.
         if (useSettingsStore.getState().snapToGrid && !ev.altKey) {
-          const g = CANVAS_GRID_SIZE
-          if (movesRightEdge) {
-            const right = rs.startOrigin.x + rs.startSize.width + deltaX
-            deltaX = Math.round(right / g) * g - (rs.startOrigin.x + rs.startSize.width)
-          } else if (movesLeftEdge) {
-            const left = rs.startOrigin.x + deltaX
-            deltaX = Math.round(left / g) * g - rs.startOrigin.x
-          }
-          if (movesBottomEdge) {
-            const bottom = rs.startOrigin.y + rs.startSize.height + deltaY
-            deltaY = Math.round(bottom / g) * g - (rs.startOrigin.y + rs.startSize.height)
-          } else if (movesTopEdge) {
-            const top = rs.startOrigin.y + deltaY
-            deltaY = Math.round(top / g) * g - rs.startOrigin.y
-          }
+          const snapped = snapResizeDelta(
+            { left: movesLeftEdge, right: movesRightEdge, top: movesTopEdge, bottom: movesBottomEdge },
+            rs.startOrigin,
+            rs.startSize,
+            { x: deltaX, y: deltaY },
+          )
+          deltaX = snapped.x
+          deltaY = snapped.y
         }
 
         let newOriginX = rs.startOrigin.x
