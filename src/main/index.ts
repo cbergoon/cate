@@ -2,7 +2,7 @@ import log from './logger'
 import { app, BrowserWindow, ipcMain, dialog, shell, nativeImage, screen, webContents, session } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { SHELL_SHOW_IN_FOLDER, WEBVIEW_SCREENSHOT, NATIVE_FILE_DRAG, CAPTURE_PAGE, DIALOG_OPEN_FOLDER, DIALOG_SAVE_FILE, DIALOG_CONFIRM_UNSAVED, DIALOG_CONFIRM_CLOSE_CANVAS, DIALOG_CONFIRM_DELETE_REGION, DIALOG_CONFIRM_IMPORT, DIALOG_CONFIRM_RELOAD_WORKSPACE, APP_OPEN_PATH } from '../shared/ipc-channels'
+import { SHELL_SHOW_IN_FOLDER, WEBVIEW_SCREENSHOT, NATIVE_FILE_DRAG, CAPTURE_PAGE, DIALOG_OPEN_FOLDER, DIALOG_SAVE_FILE, DIALOG_CONFIRM_UNSAVED, DIALOG_CONFIRM_CLOSE_CANVAS, DIALOG_CONFIRM_DELETE_REGION, DIALOG_CONFIRM_IMPORT, DIALOG_CONFIRM_RELOAD_WORKSPACE, DIALOG_TERMINAL_LINK_OPEN, APP_OPEN_PATH } from '../shared/ipc-channels'
 import {
   WINDOW_SET_TITLE,
   PANEL_TRANSFER, PANEL_RECEIVE, PANEL_TRANSFER_ACK,
@@ -44,7 +44,10 @@ import { beginTerminalTransfer, acknowledgeTerminalTransfer, handleCrossWindowDr
 import type { CateWindowParams, DockWindowInitPayload, PanelState, PanelTransferSnapshot, WindowDockState } from '../shared/types'
 import { disableRendererSandbox, disableTrustScoping } from './featureFlags'
 import { getSharedPanelDef } from '../shared/panels'
+import { startPerfMonitor, getLatestSnapshot } from './perf/perfMonitor'
+import { PERF_GET } from '../shared/ipc-channels'
 import { installWebContentsSecurity } from './webSecurity'
+import { installThemeSkill } from './installThemeSkill'
 import {
   startCrossWindowDrag,
   updateCrossWindowCursor,
@@ -435,6 +438,9 @@ function registerCriticalHandlers(): void {
   registerShellHandlers()
   registerMenuHandlers()
   registerWindowAndDialogHandlers()
+  // Resource profiler — no-op unless CATE_PERF=1.
+  startPerfMonitor()
+  ipcMain.handle(PERF_GET, () => getLatestSnapshot())
 }
 
 /**
@@ -651,6 +657,24 @@ function registerWindowAndDialogHandlers(): void {
       noLink: true,
     })
     return result.response === 0 ? 'reload' : 'cancel'
+  })
+
+  // Ask where to open a Cmd/Ctrl+clicked terminal link the first time (while the
+  // terminalLinkOpenTarget setting is 'ask'). The chosen target is remembered by
+  // the renderer and can be changed later in Settings → Browser.
+  ipcMain.handle(DIALOG_TERMINAL_LINK_OPEN, async (event, payload: { url: string }) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const url = payload?.url ?? ''
+    const result = await dialog.showMessageBox(win!, {
+      type: 'question',
+      message: 'Open link',
+      detail: `${url}\n\nYou can change this later in Settings → Browser.`,
+      buttons: ['On Canvas', 'In System Browser', 'Cancel'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    })
+    return result.response === 0 ? 'canvas' : result.response === 1 ? 'external' : 'cancel'
   })
 
   // Capture page screenshot for panel previews
@@ -1266,6 +1290,9 @@ app.whenReady().then(async () => {
   installWebContentsSecurity()
   registerCriticalHandlers()
   log.info('Critical IPC handlers registered')
+
+  // Install the cate-theme authoring skill into ~/.claude/skills (copy-if-missing).
+  void installThemeSkill()
 
   await runLegacyMigrationIfNeeded()
 

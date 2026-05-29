@@ -66,8 +66,7 @@ vi.mock('../stores/settingsStore', () => ({
   useSettingsStore: {
     getState: () => ({
       terminalScrollback: 2000,
-      defaultTerminalTheme: undefined,
-      terminalCustomThemes: [],
+      terminalCursorBlink: false,
     }),
     subscribe: () => () => {},
   },
@@ -79,12 +78,11 @@ vi.mock('./session', () => ({
   terminalRestoreData: new Map(),
   replayTerminalLog: async () => {},
 }))
-vi.mock('./terminalUrlAutoOpen', () => ({
-  scanTerminalChunkForUrls: () => {},
-  clearTerminalUrlBuffer: () => {},
+vi.mock('./terminalUrlOpen', () => ({
+  openTerminalUrl: () => {},
 }))
 vi.mock('./themeManager', () => ({
-  getResolvedTheme: () => 'dark-warm',
+  getActiveTheme: () => ({ terminal: {} }),
   subscribeTheme: () => () => {},
 }))
 vi.mock('./logger', () => ({ default: { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} } }))
