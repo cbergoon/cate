@@ -141,16 +141,18 @@ export function useNodeResize(
         neighborStartRef.current = []
       }
 
-      const handleMouseMove = (ev: MouseEvent) => {
+      // Compute the pending resize geometry for a cursor position. During the
+      // live drag the edge tracks the cursor 1:1 (snap=false). Grid snapping is
+      // deferred to mouseup (snap=true) so the moving edge never lags the
+      // pointer mid-gesture.
+      const computeResize = (clientX: number, clientY: number, snap: boolean) => {
         const rs = resizeStateRef.current
         if (!rs) return
 
         const zoom = canvasStoreApi.getState().zoomLevel
-        let deltaX = (ev.clientX - rs.startClientX) / zoom
-        let deltaY = (ev.clientY - rs.startClientY) / zoom
+        let deltaX = (clientX - rs.startClientX) / zoom
+        let deltaY = (clientY - rs.startClientY) / zoom
 
-        // Track the cursor 1:1 during the drag — the moving edge stays glued
-        // to the pointer.
         const movesRightEdge =
           rs.edge === 'right' || rs.edge === 'topRight' || rs.edge === 'bottomRight'
         const movesLeftEdge =
@@ -163,12 +165,13 @@ export function useNodeResize(
         if (!movesRightEdge && !movesLeftEdge) deltaX = 0
         if (!movesBottomEdge && !movesTopEdge) deltaY = 0
 
-        // Snap-to-grid: pull the moving edge onto the nearest grid line (Alt
-        // bypasses). Done on the delta so the shared-border neighbor math below,
-        // which derives from this delta, stays consistent with the primary node.
-        // Read the setting once here rather than in the hot path's condition.
-        const snapEnabled = useSettingsStore.getState().snapToGrid
-        if (snapEnabled && !ev.altKey) {
+        // Snap-to-grid runs on commit only (see handleMouseUp). Snapping the live
+        // delta on every move would step the moving edge in CANVAS_GRID_SIZE jumps
+        // while the cursor travels 1:1, so the edge would visibly lag the pointer.
+        // Snapping the delta (not the final rect) keeps the shared-border neighbor
+        // math below — derived from the same delta — consistent with the primary
+        // node.
+        if (snap) {
           const snapped = snapResizeDelta(
             { left: movesLeftEdge, right: movesRightEdge, top: movesTopEdge, bottom: movesBottomEdge },
             rs.startOrigin,
@@ -354,10 +357,10 @@ export function useNodeResize(
         // Only the grab point moves; startSize/startOrigin stay at their
         // originals so the math below remains "size = startSize + delta".
         if (movesRightEdge || movesLeftEdge) {
-          rs.startClientX = ev.clientX - appliedDeltaX * zoom
+          rs.startClientX = clientX - appliedDeltaX * zoom
         }
         if (movesBottomEdge || movesTopEdge) {
-          rs.startClientY = ev.clientY - appliedDeltaY * zoom
+          rs.startClientY = clientY - appliedDeltaY * zoom
         }
 
         // Accumulate geometry — don't update store directly
@@ -366,6 +369,20 @@ export function useNodeResize(
           size: { width: newWidth, height: newHeight },
           neighbors,
         }
+      }
+
+      // Whether the pointer actually moved during the gesture. A bare click on
+      // the resize edge (mousedown → mouseup, no move) must stay a no-op; without
+      // this guard the mouseup snap below would pull a non-grid-aligned edge onto
+      // the grid on a click that never dragged.
+      let moved = false
+
+      const handleMouseMove = (ev: MouseEvent) => {
+        if (!resizeStateRef.current) return
+        moved = true
+        // Track the cursor 1:1 while dragging — the moving edge stays glued to
+        // the pointer. Grid snapping is applied on release (handleMouseUp).
+        computeResize(ev.clientX, ev.clientY, false)
 
         // Schedule RAF if not already pending
         if (!rafId.current) {
@@ -387,9 +404,20 @@ export function useNodeResize(
         }
       }
 
-      const handleMouseUp = () => {
+      const handleMouseUp = (ev: MouseEvent) => {
         window.removeEventListener('mousemove', handleMouseMove)
         window.removeEventListener('mouseup', handleMouseUp)
+
+        // Snap the moving edge(s) to the grid on release (Alt bypasses, same
+        // window only). Recomputing from the final cursor position with snapping
+        // on lands the committed geometry — primary node and any shared-border
+        // neighbors — exactly on grid lines, while the live drag stayed glued to
+        // the cursor. Flushed to the store below. Skipped on a bare click (no
+        // movement) so clicking an edge never resizes the panel.
+        if (moved) {
+          const snapEnabled = useSettingsStore.getState().snapToGrid
+          computeResize(ev.clientX, ev.clientY, snapEnabled && !ev.altKey)
+        }
 
         isResizingRef.current = false
         currentEdgeRef.current = null

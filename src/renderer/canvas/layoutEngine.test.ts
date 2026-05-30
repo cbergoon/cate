@@ -62,4 +62,15 @@ describe('snapResizeDelta', () => {
     expect(snapResizeDelta({ ...NONE, right: true }, origin, size, { x: 18, y: 0 }, 50)).toEqual({ x: 0, y: 0 })
     expect(snapResizeDelta({ ...NONE, right: true }, origin, size, { x: 30, y: 0 }, 50)).toEqual({ x: 50, y: 0 })
   })
+
+  it('a zero delta still snaps a non-grid-aligned edge', () => {
+    // A panel whose right edge sits off the grid (100 + 305 = 405). Snapping a
+    // zero-length gesture — i.e. a bare click on the edge with no drag — would
+    // still pull that edge onto the nearest grid line (405 → 400, dx -5). This
+    // is exactly why useNodeResize defers grid snapping to a gesture that
+    // actually moved: an unguarded snap on mouseup would resize a panel the user
+    // only clicked. See useNodeResize.gesture.test.tsx ('bare click is a no-op').
+    const offGrid = { width: 305, height: 200 } // right edge x = 405
+    expect(snapResizeDelta({ ...NONE, right: true }, origin, offGrid, { x: 0, y: 0 })).toEqual({ x: -5, y: 0 })
+  })
 })

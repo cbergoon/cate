@@ -11,7 +11,7 @@
 import type { StoreApi } from 'zustand'
 import type { PanelType, Point, Size } from '../../shared/types'
 import type { CanvasStore } from '../stores/canvasStore'
-import type { DragSource, DropTarget, ScreenRect } from './types'
+import type { DragSource, DropTarget } from './types'
 import {
   getDropZoneEntries,
   resolveDropEdge,
@@ -23,7 +23,6 @@ import { getDefaultSession } from './session'
 import { cursorToCanvasOrigin } from './geometry'
 import { findTabStackAcrossZones } from '../stores/dockTreeUtils'
 import { snapToGrid, CANVAS_GRID_SIZE } from '../canvas/layoutEngine'
-import { canvasToView } from '../lib/coordinates'
 import type { WindowDockState } from '../../shared/types'
 
 // -----------------------------------------------------------------------------
@@ -79,7 +78,8 @@ export interface ResolveOptions {
 }
 
 /** Resolve cursor + source into a typed DropTarget. When `opts.snap` is true,
- *  canvas drops are snapped to the canvas grid (and carry a snapped ghost rect). */
+ *  the committed origin of a canvas drop is snapped to the canvas grid (the
+ *  ghost still free-tracks the cursor — see Overlay). */
 export function resolveDrop(
   cursor: { client: Point; screen: Point; insideWindow: boolean },
   source: DragSource,
@@ -205,21 +205,10 @@ function resolveCanvasHit(
     state.viewportOffset,
     grab,
   )
+  // Snap the committed origin to the grid when snap-to-grid is active. The ghost
+  // still free-tracks the cursor during the drag (see Overlay) — the panel moves
+  // freely and only snaps to the grid on release.
   const origin = snap ? snapToGrid(rawOrigin, CANVAS_GRID_SIZE) : rawOrigin
-
-  // When snapping, precompute the screen-px ghost rect from the snapped origin
-  // so the preview lands exactly where the drop will commit (the Overlay
-  // free-tracks the cursor otherwise).
-  let ghostScreen: ScreenRect | undefined
-  if (snap) {
-    const viewOrigin = canvasToView(origin, state.zoomLevel, state.viewportOffset)
-    ghostScreen = {
-      left: rect.left + viewOrigin.x,
-      top: rect.top + viewOrigin.y,
-      width: ghostSize.width * state.zoomLevel,
-      height: ghostSize.height * state.zoomLevel,
-    }
-  }
 
   // Source is a canvas-node already on this canvas → reposition (move existing).
   if (source.origin.kind === 'canvas-node' && source.origin.canvasStoreApi === canvasStoreApi) {
@@ -228,7 +217,6 @@ function resolveCanvasHit(
       canvasStoreApi: source.origin.canvasStoreApi,
       nodeId: source.origin.nodeId,
       origin,
-      ghostScreen,
     }
   }
 
@@ -242,6 +230,5 @@ function resolveCanvasHit(
     canvasStoreApi,
     origin,
     size: ghostSize,
-    ghostScreen,
   }
 }

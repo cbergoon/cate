@@ -14,7 +14,6 @@ vi.mock('../panels/CanvasPanel', () => ({
 import type { StoreApi } from 'zustand'
 import { resolveDrop, type DropEnvironment } from './resolve'
 import { snapToGrid } from '../canvas/layoutEngine'
-import { canvasToView } from '../lib/coordinates'
 import type { DragSource } from './types'
 import type { CanvasStore } from '../stores/canvasStore'
 import type { DockStore } from '../stores/dockStore'
@@ -516,10 +515,11 @@ describe('resolveDrop — canvas surface', () => {
     })
   })
 
-  it('snap=true rounds the reposition origin to the grid and attaches a snapped ghost rect', () => {
-    // Expectations derive from snapToGrid/canvasToView so they stay correct if
-    // the grid size changes. zoom=1, offset=0, container at (0,0) → raw origin
-    // is just cursor - grab.
+  it('snap=true rounds the reposition origin to the grid (ghost still free-tracks)', () => {
+    // The committed origin snaps to the grid; the ghost free-tracks the cursor
+    // during the drag (see Overlay), so no snapped preview rect is attached.
+    // Expectations derive from snapToGrid so they stay correct if the grid size
+    // changes. zoom=1, offset=0, container at (0,0) → raw origin is cursor - grab.
     const cursor = { x: 300, y: 200 }
     const grabOffset = { x: 50, y: 25 }
     const rawOrigin = { x: cursor.x - grabOffset.x, y: cursor.y - grabOffset.y }
@@ -544,12 +544,10 @@ describe('resolveDrop — canvas surface', () => {
       canvasStoreApi: CANVAS_STORE_A,
       nodeId: 'node-A',
       origin,
-      // zoom=1, offset=0, container at (0,0) → ghost screen == snapped origin.
-      ghostScreen: { left: origin.x, top: origin.y, width: ghostSize.width, height: ghostSize.height },
     })
   })
 
-  it('snap=true snaps canvas-add origin and scales the ghost rect by target zoom', () => {
+  it('snap=true snaps canvas-add origin (no snapped ghost rect attached)', () => {
     // zoom=2, offset {30,40}, container at {10,20}, grab 0.
     // cursor → canvas: ((300-10)-30)/2, ((200-20)-40)/2 = (130, 70) before snap.
     const zoom = 2
@@ -557,7 +555,6 @@ describe('resolveDrop — canvas surface', () => {
     const containerRect = rect(10, 20, 1000, 800)
     const rawCanvas = { x: 130, y: 70 }
     const origin = snapToGrid(rawCanvas)
-    const view = canvasToView(origin, zoom, offset)
     const cursor = { x: 300, y: 200 }
     const zoomed = fakeCanvasStore(zoom, offset)
     const t = resolveDropT(
@@ -580,16 +577,10 @@ describe('resolveDrop — canvas surface', () => {
       canvasStoreApi: zoomed,
       origin,
       size: ghostSize,
-      ghostScreen: {
-        left: containerRect.left + view.x,
-        top: containerRect.top + view.y,
-        width: ghostSize.width * zoom,
-        height: ghostSize.height * zoom,
-      },
     })
   })
 
-  it('snap defaults to false — no ghostScreen, raw origin preserved', () => {
+  it('snap defaults to false — raw origin preserved', () => {
     const cursor = { x: 311, y: 207 }
     const t = resolveDropT(
       { client: cursor, screen: cursor, insideWindow: true },
@@ -606,7 +597,6 @@ describe('resolveDrop — canvas surface', () => {
       }),
     )
     expect(t).toMatchObject({ kind: 'canvas-reposition', origin: { x: 311, y: 207 } })
-    expect((t as { ghostScreen?: unknown }).ghostScreen).toBeUndefined()
   })
 
   it('two adjacent canvases — picks the one canvasAtCursor returns', () => {

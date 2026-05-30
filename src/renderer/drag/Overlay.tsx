@@ -29,14 +29,11 @@ export default function DragOverlay() {
   // mirror the source visually regardless of which canvas/dock the cursor
   // currently hovers over.
   //
-  // When snap-to-grid is active, a canvas target carries a precomputed
-  // `ghostScreen` rect (the snapped landing position) — render the ghost there
-  // so the preview matches the committed origin instead of free-tracking.
-  const snappedRect =
-    target && (target.kind === 'canvas-reposition' || target.kind === 'canvas-add')
-      ? target.ghostScreen
-      : undefined
-  const rect = snappedRect ?? ghostScreenRect(cursor.client, grab, ghostSize, ghostZoom)
+  // The ghost free-tracks the cursor 1:1 even when snap-to-grid is active — the
+  // panel should move freely under the pointer and only snap to the grid on
+  // release. The committed origin (target.origin) is still snapped, so the drop
+  // lands on the grid; we just don't preview that snap mid-drag.
+  const rect = ghostScreenRect(cursor.client, grab, ghostSize, ghostZoom)
 
   return createPortal(
     <div data-drag-overlay="true" style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 10000 }}>
