@@ -3,6 +3,7 @@ import type { CanvasRegion } from '../../shared/types'
 import { useCanvasStoreContext, useCanvasStoreApi } from '../stores/CanvasStoreContext'
 import type { NativeContextMenuItem } from '../../shared/electron-api'
 import { useAppStore, getCanvasOpsById } from '../stores/appStore'
+import { useUIStore, effectiveCanvasTool } from '../stores/uiStore'
 import { confirmDeleteRegion } from '../lib/confirmDeleteRegion'
 import { ACCENT_COLORS, ACCENT_COLOR_NAMES, ACCENT_PALETTE, REGION_FILL_ALPHA, REGION_FILL_COLORS } from '../../shared/colors'
 
@@ -41,6 +42,7 @@ const CanvasRegionComponent: React.FC<Props> = ({ region, zoomLevel }) => {
   const isDropTarget = useCanvasStoreContext((s) => s.dropTargetRegionId === region.id)
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number; lastClientX: number; lastClientY: number } | null>(null)
   const listenersAbortRef = useRef<AbortController | null>(null)
+  const [hoveredHandle, setHoveredHandle] = useState<ResizeHandle | null>(null)
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(region.label)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -64,6 +66,12 @@ const CanvasRegionComponent: React.FC<Props> = ({ region, zoomLevel }) => {
       return
     }
     if (e.button !== 0) return
+
+    // Hand tool (or Space-hold): a left-press must pan the canvas, never select
+    // or drag the region. Bail without stopping propagation so the event bubbles
+    // to the canvas container's pan handler.
+    if (effectiveCanvasTool(useUIStore.getState()) === 'hand') return
+
     e.stopPropagation()
 
     // Shift-click: toggle selection
@@ -294,6 +302,8 @@ const CanvasRegionComponent: React.FC<Props> = ({ region, zoomLevel }) => {
 
   // Resize handle mouse down
   const handleResizeStart = useCallback((e: React.MouseEvent, handle: ResizeHandle) => {
+    // Hand tool (or Space-hold): let the press bubble to the canvas pan handler.
+    if (effectiveCanvasTool(useUIStore.getState()) === 'hand') return
     e.preventDefault()
     e.stopPropagation()
 
@@ -346,7 +356,11 @@ const CanvasRegionComponent: React.FC<Props> = ({ region, zoomLevel }) => {
     window.addEventListener('mouseup', handleMouseUp, { signal })
   }, [region.id, region.origin, region.size])
 
-  const handleSize = 8
+  // Bracket dimensions in screen px, divided by zoom so they stay a constant
+  // on-screen size regardless of the canvas zoom level.
+  const bracketLen = 13 / zoomLevel
+  const bracketThick = 2 / zoomLevel
+  const bracketNudge = 4 / zoomLevel
 
   return (
     <>
@@ -358,19 +372,12 @@ const CanvasRegionComponent: React.FC<Props> = ({ region, zoomLevel }) => {
           top: region.origin.y,
           width: region.size.width,
           height: region.size.height,
-          background: `linear-gradient(135deg, rgba(${parseRgba(region.color).r}, ${parseRgba(region.color).g}, ${parseRgba(region.color).b}, ${isDropTarget ? 0.22 : 0.10}) 0%, rgba(${parseRgba(region.color).r}, ${parseRgba(region.color).g}, ${parseRgba(region.color).b}, ${isDropTarget ? 0.12 : 0.04}) 100%)`,
+          background: `rgba(${parseRgba(region.color).r}, ${parseRgba(region.color).g}, ${parseRgba(region.color).b}, ${isDropTarget ? 0.42 : 0.3})`,
           borderRadius: 0,
-          border: isDropTarget
-            ? `2px solid rgba(${parseRgba(region.color).r}, ${parseRgba(region.color).g}, ${parseRgba(region.color).b}, 1)`
-            : isSelected
-            ? `1.5px solid rgba(${parseRgba(region.color).r}, ${parseRgba(region.color).g}, ${parseRgba(region.color).b}, 0.9)`
-            : `1px solid rgba(${parseRgba(region.color).r}, ${parseRgba(region.color).g}, ${parseRgba(region.color).b}, 0.35)`,
-          boxShadow: isDropTarget
-            ? `0 0 0 6px rgba(${parseRgba(region.color).r}, ${parseRgba(region.color).g}, ${parseRgba(region.color).b}, 0.18), inset 0 1px 0 var(--border-subtle)`
-            : isSelected
-            ? `0 0 0 4px rgba(${parseRgba(region.color).r}, ${parseRgba(region.color).g}, ${parseRgba(region.color).b}, 0.12), inset 0 1px 0 var(--border-subtle)`
-            : `inset 0 1px 0 var(--border-subtle)`,
-          transition: 'background 120ms ease, box-shadow 120ms ease, border-color 120ms ease',
+          border: 'none',
+          backdropFilter: 'blur(4px)',
+          WebkitBackdropFilter: 'blur(4px)',
+          transition: 'background 120ms ease',
           cursor: 'grab',
         }}
         onMouseDown={handleMouseDown}
@@ -401,7 +408,6 @@ const CanvasRegionComponent: React.FC<Props> = ({ region, zoomLevel }) => {
               textShadow: '0 1px 3px rgba(0, 0, 0, 0.7)',
               background: 'transparent',
               border: 'none',
-              borderBottom: '1px solid var(--text-primary)',
               borderRadius: 0,
               padding: 0,
               outline: 'none',
@@ -441,50 +447,41 @@ const CanvasRegionComponent: React.FC<Props> = ({ region, zoomLevel }) => {
         )}
       </div>
 
-      {/* Resize handles — shown when selected */}
-      {isSelected && (
-        <>
-          {/* Corner handles */}
-          {(['topLeft', 'topRight', 'bottomLeft', 'bottomRight'] as ResizeHandle[]).map((handle) => (
-            <div
-              key={handle}
-              style={{
-                position: 'absolute',
-                left: region.origin.x + (handle.includes('Left') ? -handleSize / 2 : region.size.width - handleSize / 2),
-                top: region.origin.y + (handle.includes('top') || handle === 'topLeft' || handle === 'topRight' ? -handleSize / 2 : region.size.height - handleSize / 2),
-                width: handleSize,
-                height: handleSize,
-                backgroundColor: `rgba(${parseRgba(region.color).r}, ${parseRgba(region.color).g}, ${parseRgba(region.color).b}, 0.9)`,
-                borderRadius: 2,
-                cursor: HANDLE_CURSORS[handle],
-                zIndex: 1,
-              }}
-              onMouseDown={(e) => handleResizeStart(e, handle)}
-            />
-          ))}
-          {/* Edge handles */}
-          {(['top', 'bottom', 'left', 'right'] as ResizeHandle[]).map((handle) => {
-            const isHoriz = handle === 'top' || handle === 'bottom'
-            return (
-              <div
-                key={handle}
-                style={{
-                  position: 'absolute',
-                  left: region.origin.x + (handle === 'left' ? -handleSize / 2 : handle === 'right' ? region.size.width - handleSize / 2 : region.size.width / 2 - handleSize / 2),
-                  top: region.origin.y + (handle === 'top' ? -handleSize / 2 : handle === 'bottom' ? region.size.height - handleSize / 2 : region.size.height / 2 - handleSize / 2),
-                  width: isHoriz ? handleSize : handleSize,
-                  height: isHoriz ? handleSize : handleSize,
-                  backgroundColor: `rgba(${parseRgba(region.color).r}, ${parseRgba(region.color).g}, ${parseRgba(region.color).b}, 0.7)`,
-                  borderRadius: 2,
-                  cursor: HANDLE_CURSORS[handle],
-                  zIndex: 1,
-                }}
-                onMouseDown={(e) => handleResizeStart(e, handle)}
-              />
-            )
-          })}
-        </>
-      )}
+      {/* L-bracket corners — shown when selected, nudge outward on hover */}
+      {isSelected && (['topLeft', 'topRight', 'bottomLeft', 'bottomRight'] as ResizeHandle[]).map((handle) => {
+        const isLeft = handle.includes('Left')
+        const isTop = handle.includes('top') || handle === 'topLeft' || handle === 'topRight'
+        const isHovered = hoveredHandle === handle
+        const alpha = isHovered ? 0.95 : 0.55
+        const color = `rgba(${parseRgba(region.color).r}, ${parseRgba(region.color).g}, ${parseRgba(region.color).b}, ${alpha})`
+        const nudge = bracketNudge
+        return (
+          <div
+            key={handle}
+            data-region-resize-handle={handle}
+            style={{
+              position: 'absolute',
+              left: region.origin.x + (isLeft ? 0 : region.size.width - bracketLen),
+              top: region.origin.y + (isTop ? 0 : region.size.height - bracketLen),
+              width: bracketLen,
+              height: bracketLen,
+              borderTop: isTop ? `${bracketThick}px solid ${color}` : 'none',
+              borderBottom: !isTop ? `${bracketThick}px solid ${color}` : 'none',
+              borderLeft: isLeft ? `${bracketThick}px solid ${color}` : 'none',
+              borderRight: !isLeft ? `${bracketThick}px solid ${color}` : 'none',
+              transform: isHovered
+                ? `translate(${isLeft ? -nudge : nudge}px, ${isTop ? -nudge : nudge}px)`
+                : 'translate(0, 0)',
+              transition: 'transform 140ms ease, border-color 140ms ease',
+              cursor: HANDLE_CURSORS[handle],
+              zIndex: 1,
+            }}
+            onMouseEnter={() => setHoveredHandle(handle)}
+            onMouseLeave={() => setHoveredHandle(null)}
+            onMouseDown={(e) => handleResizeStart(e, handle)}
+          />
+        )
+      })}
 
     </>
   )

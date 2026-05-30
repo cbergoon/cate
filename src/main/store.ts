@@ -3,7 +3,7 @@
 // electron-store v10 is ESM-only, so we use dynamic import()
 // =============================================================================
 
-import { ipcMain, app } from 'electron'
+import { ipcMain, app, BrowserWindow, nativeTheme } from 'electron'
 import log from './logger'
 import fs from 'fs/promises'
 import fsSync from 'fs'
@@ -13,6 +13,7 @@ import {
   SETTINGS_SET,
   SETTINGS_GET_ALL,
   SETTINGS_RESET,
+  SETTINGS_CHANGED,
   BOOT_SNAPSHOT_WRITE,
   RECENT_PROJECTS_GET,
   RECENT_PROJECTS_ADD,
@@ -23,6 +24,7 @@ import {
 } from '../shared/ipc-channels'
 import { DEFAULT_SETTINGS } from '../shared/types'
 import type { AppSettings } from '../shared/types'
+import { broadcastToAll } from './windowRegistry'
 
 // ---------------------------------------------------------------------------
 // Settings schema: expected key → expected typeof value (or 'array')
@@ -31,7 +33,10 @@ const SETTINGS_SCHEMA: Record<keyof AppSettings, string> = {
   defaultShellPath: 'string',
   warnBeforeQuit: 'boolean',
   nativeTabs: 'boolean',
-  appearanceMode: 'string',
+  activeThemeId: 'string',
+  systemLightThemeId: 'string',
+  systemDarkThemeId: 'string',
+  customThemes: 'array',
   editorFontSize: 'number',
   showMinimap: 'boolean',
   defaultPanelWidth: 'number',
@@ -43,32 +48,34 @@ const SETTINGS_SCHEMA: Record<keyof AppSettings, string> = {
   terminalFontFamily: 'string',
   terminalFontSize: 'number',
   terminalScrollback: 'number',
+  terminalScrollSpeed: 'number',
+  terminalContrast: 'number',
   terminalCursorBlink: 'boolean',
+  terminalOptionIsMeta: 'boolean',
   autoSuspendIdleTerminals: 'boolean',
-  terminalCustomThemes: 'array',
-  defaultTerminalTheme: 'string',
   browserHomepage: 'string',
   browserSearchEngine: 'string',
-  autoOpenUrlsFromTerminal: 'string',
+  terminalLinkOpenTarget: 'string',
   sidebarTintOpacity: 'number',
   showFileExplorerOnLaunch: 'boolean',
+  fileExclusions: 'array',
   notificationsEnabled: 'boolean',
   notifyOnlyWhenUnfocused: 'boolean',
   crashReportingEnabled: 'boolean',
   usageAnalyticsEnabled: 'boolean',
 }
 
+// Settings that open windows react to live (via onSettingsChanged). The
+// SETTINGS_CHANGED broadcast is scoped to these so routine edits — font size,
+// zoom speed, etc. — don't wake every window/explorer on each change.
+const LIVE_REACTIVE_SETTINGS = new Set<keyof AppSettings>(['fileExclusions'])
+
 /** Safely merge only known, type-correct keys from a parsed object into the settings cache. */
 function mergeValidatedSettings(target: Partial<AppSettings>, source: Record<string, unknown>): void {
   for (const key of Object.keys(SETTINGS_SCHEMA) as Array<keyof AppSettings>) {
     if (!(key in source)) continue
-    let val = source[key]
+    const val = source[key]
     const expected = SETTINGS_SCHEMA[key]
-    // Migration: autoOpenUrlsFromTerminal was a boolean prior to v0.4.5.
-    // Translate legacy values so users keep their previous behavior.
-    if (key === 'autoOpenUrlsFromTerminal' && typeof val === 'boolean') {
-      val = val ? 'auto' : 'off'
-    }
     if (expected === 'array') {
       if (!Array.isArray(val)) { log.warn('Settings schema mismatch: %s expected array, got %s', key, typeof val); continue }
     } else {
@@ -130,6 +137,10 @@ export interface BootSnapshot {
   geometry?: { x: number; y: number; width: number; height: number }
   theme?: string
   backgroundColor?: string
+  // Desired native window appearance for the active theme. Drives
+  // nativeTheme.themeSource so the macOS native title bar (native-tabs mode)
+  // matches the theme's dark/light instead of the OS. 'system' tracks the OS.
+  appearance?: 'dark' | 'light' | 'system'
   nativeTabs?: boolean
   lastWorkspaceId?: string
 }
@@ -198,6 +209,22 @@ export function registerHandlers(): void {
       const store = await getStore()
       store.set(key, value as never)
       ;(settingsCache as Record<string, unknown>)[key as string] = value
+      // Notify all windows so live-reactive settings (e.g. file exclusions)
+      // can update without a relaunch. Scoped to keys that actually have live
+      // listeners so routine setting changes don't churn every window.
+      if (LIVE_REACTIVE_SETTINGS.has(key)) {
+        broadcastToAll(SETTINGS_CHANGED, key, value)
+      }
+      // Rebuild active fs watchers so their ignore globs match the new
+      // exclusions (dynamic import avoids a static store<->filesystem cycle).
+      if (key === 'fileExclusions') {
+        try {
+          const { refreshWatcherIgnores } = await import('./ipc/filesystem')
+          refreshWatcherIgnores()
+        } catch (err) {
+          log.warn('Watcher ignore refresh failed: %O', err)
+        }
+      }
       // Live-toggle Sentry when the user flips the crash-reporting setting,
       // so they don't need to relaunch for the change to take effect.
       if (key === 'crashReportingEnabled') {
@@ -227,9 +254,31 @@ export function registerHandlers(): void {
 
   // Boot snapshot — renderer pushes geometry/theme/etc. updates here. The
   // write is debounced internally; this handler returns immediately.
-  ipcMain.handle(BOOT_SNAPSHOT_WRITE, async (_event, partial: Partial<BootSnapshot>) => {
-    if (partial && typeof partial === 'object') {
-      writeBootSnapshot(partial)
+  ipcMain.handle(BOOT_SNAPSHOT_WRITE, async (event, partial: Partial<BootSnapshot>) => {
+    if (!partial || typeof partial !== 'object') return
+    writeBootSnapshot(partial)
+    // The boot snapshot only colors the *next* cold launch. Apply the same
+    // background to the live window now so the OS-drawn chrome (native title
+    // bar / traffic-light region, and the backdrop shown mid-resize) tracks
+    // theme changes immediately — for built-in, new, and user-generated themes
+    // alike — instead of lagging until the next relaunch. Scoped to the sender
+    // so each window (main + detached panel/dock) updates its own chrome.
+    if (typeof partial.backgroundColor === 'string') {
+      try {
+        BrowserWindow.fromWebContents(event.sender)?.setBackgroundColor(partial.backgroundColor)
+      } catch (err) {
+        log.warn('Live window background update failed: %O', err)
+      }
+    }
+    // Drive the app-wide native appearance from the active theme so the macOS
+    // native title bar (native-tabs mode) follows the theme's dark/light. It's
+    // global (NSApplication.appearance), so one assignment covers every window.
+    if (partial.appearance === 'dark' || partial.appearance === 'light' || partial.appearance === 'system') {
+      try {
+        nativeTheme.themeSource = partial.appearance
+      } catch (err) {
+        log.warn('Native appearance update failed: %O', err)
+      }
     }
   })
 

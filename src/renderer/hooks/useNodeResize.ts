@@ -64,7 +64,6 @@ function isCardinalEdge(edge: ResizeEdge): edge is 'top' | 'bottom' | 'left' | '
 export function useNodeResize(
   nodeId: string,
   panelType: PanelType,
-  zoomLevel: number,
   canvasStoreApi: StoreApi<CanvasStore>,
 ): UseNodeResizeReturn {
   const resizeStateRef = useRef<ResizeState | null>(null)
@@ -451,7 +450,7 @@ export function useNodeResize(
       window.addEventListener('mousemove', handleMouseMove)
       window.addEventListener('mouseup', handleMouseUp)
     },
-    [nodeId, panelType, zoomLevel, minSize.width, minSize.height],
+    [nodeId, panelType, minSize.width, minSize.height],
   )
 
   const getCursor = useCallback(

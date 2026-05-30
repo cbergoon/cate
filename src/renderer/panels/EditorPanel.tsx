@@ -4,6 +4,7 @@
 // =============================================================================
 
 import { useEffect, useRef, useCallback, useState } from 'react'
+import { useRenderCount } from '../lib/perf/perfClient'
 import log from '../lib/logger'
 import * as monaco from 'monaco-editor'
 import ReactMarkdown from 'react-markdown'
@@ -18,7 +19,9 @@ import {
   clearEditorActive,
   getActiveEditorPanelId,
 } from '../lib/editorSaveRegistry'
-import { getResolvedTheme, subscribeTheme } from '../lib/themeManager'
+import { getActiveTheme, subscribeTheme } from '../lib/themeManager'
+import type { Theme } from '../../shared/types'
+import { takePendingReveal } from '../lib/editorReveal'
 
 // -----------------------------------------------------------------------------
 // Monaco worker setup for Electron (Vite bundler)
@@ -160,68 +163,25 @@ function releaseModel(filePath: string): void {
 }
 
 // -----------------------------------------------------------------------------
-// Custom Monaco themes — one per app theme.
-// Defined once at module load; setTheme() swaps them at runtime.
+// Monaco theme — a single 'cate-active' theme built from the active unified
+// Theme's `editor` block (base + syntax token rules + chrome colors).
+// (Re)defining the same name and calling setTheme() re-themes every open editor.
 // -----------------------------------------------------------------------------
 
-let cateThemesDefined = false
+const CATE_MONACO_THEME = 'cate-active'
 
-function ensureCateThemes() {
-  if (cateThemesDefined) return
-
-  // Dark Warm — original warm palette, canvas-node background #1f1e1c
-  monaco.editor.defineTheme('cate-dark-warm', {
-    base: 'vs-dark',
+function applyMonacoTheme(theme: Theme): void {
+  monaco.editor.defineTheme(CATE_MONACO_THEME, {
+    base: theme.editor.base,
     inherit: true,
-    rules: [],
-    colors: {
-      'editor.background': '#1f1e1c',
-      'editorGutter.background': '#1f1e1c',
-      'minimap.background': '#1f1e1c',
-      'editor.lineHighlightBorder': '#00000000',
-      'contrastBorder': '#00000000',
-    },
+    rules: theme.editor.tokens.map((t) => ({
+      token: t.token,
+      ...(t.foreground ? { foreground: t.foreground } : {}),
+      ...(t.background ? { background: t.background } : {}),
+      ...(t.fontStyle ? { fontStyle: t.fontStyle } : {}),
+    })),
+    colors: theme.editor.colors ?? {},
   })
-
-  // Dark Cold — VS Code Dark+ defaults, minimal overrides
-  monaco.editor.defineTheme('cate-dark-cold', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [],
-    colors: {
-      'editor.background': '#1e1e1e',
-      'editorGutter.background': '#1e1e1e',
-      'minimap.background': '#1e1e1e',
-      'editor.lineHighlightBorder': '#00000000',
-      'contrastBorder': '#00000000',
-    },
-  })
-
-  // Light Subtle — Solarized-warm cream palette matching app chrome
-  monaco.editor.defineTheme('cate-light-subtle', {
-    base: 'vs',
-    inherit: true,
-    rules: [],
-    colors: {
-      'editor.background': '#ddd5ca',
-      'editorGutter.background': '#ddd5ca',
-      'minimap.background': '#ddd5ca',
-      'editor.foreground': '#38322b',
-      'editorLineNumber.foreground': '#8a8274',
-      'editorLineNumber.activeForeground': '#38322b',
-      'editor.lineHighlightBackground': '#e5dfd6',
-      'editor.lineHighlightBorder': '#00000000',
-      'editor.selectionBackground': '#c8bfb0',
-      'editorCursor.foreground': '#3c7ef0',
-      'contrastBorder': '#00000000',
-    },
-  })
-
-  cateThemesDefined = true
-}
-
-function resolvedMonacoTheme(): string {
-  return 'cate-' + getResolvedTheme()
 }
 
 // -----------------------------------------------------------------------------
@@ -351,6 +311,7 @@ export default function EditorPanel({
   nodeId,
   filePath,
 }: EditorPanelProps) {
+  useRenderCount('EditorPanel')
   const containerRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const diffEditorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null)
@@ -365,12 +326,22 @@ export default function EditorPanel({
   // path we just learned and the next Cmd+S would re-open Save-As.
   if (filePath !== undefined) filePathRef.current = filePath
 
-  const [markdownPreview, setMarkdownPreview] = useState(false)
   const [markdownContent, setMarkdownContent] = useState('')
 
   const workspaces = useAppStore((s) => s.workspaces)
   const ws = workspaces.find((w) => w.id === workspaceId)
   const diffMode = ws?.panels[panelId]?.diffMode
+  // Preview mode is kept per-panel in the store rather than as local state: a
+  // single EditorPanel mount is reused across dock tabs (renderPanelComponent
+  // creates the element without a key), so local state would leak the toggle
+  // from one markdown file to the next. Keying it by panelId also keeps each
+  // tab's choice independent across canvas switches.
+  const markdownPreview = !!ws?.panels[panelId]?.markdownPreview
+  const setMarkdownPreview = useCallback(
+    (next: boolean) =>
+      useAppStore.getState().setPanelMarkdownPreview(workspaceId, panelId, next),
+    [workspaceId, panelId],
+  )
   const rootPath = ws?.rootPath
   const isMarkdown = !!filePath && /\.mdx?$/i.test(filePath)
 
@@ -455,8 +426,8 @@ export default function EditorPanel({
   useEffect(() => {
     if (!containerRef.current) return
 
-    ensureCateThemes()
-    monaco.editor.setTheme(resolvedMonacoTheme())
+    applyMonacoTheme(getActiveTheme())
+    monaco.editor.setTheme(CATE_MONACO_THEME)
     const fontSize = useSettingsStore.getState().editorFontSize
 
     // =======================================================================
@@ -464,7 +435,7 @@ export default function EditorPanel({
     // =======================================================================
     if (diffMode && filePath && rootPath) {
       const diffEditor = monaco.editor.createDiffEditor(containerRef.current, {
-        theme: resolvedMonacoTheme(),
+        theme: CATE_MONACO_THEME,
         fontFamily: 'Menlo, Monaco, "Courier New", monospace',
         fontSize: fontSize || 12,
         automaticLayout: false,
@@ -537,7 +508,7 @@ export default function EditorPanel({
     // REGULAR EDITOR
     // =======================================================================
     const editor = monaco.editor.create(containerRef.current, {
-      theme: resolvedMonacoTheme(),
+      theme: CATE_MONACO_THEME,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       fontSize: fontSize || 12,
       minimap: { enabled: false },
@@ -557,6 +528,18 @@ export default function EditorPanel({
     layoutObserver.observe(containerRef.current)
 
     editorRef.current = editor
+
+    // Jump to a line/column requested by a terminal file-link click (one-shot).
+    // Runs after the model is set so the reveal targets real content.
+    const applyPendingReveal = () => {
+      const reveal = takePendingReveal(panelId)
+      if (!reveal) return
+      try {
+        editor.revealLineInCenter(reveal.line)
+        editor.setPosition({ lineNumber: reveal.line, column: reveal.column ?? 1 })
+        editor.focus()
+      } catch { /* ignore reveal failures (e.g. line beyond EOF) */ }
+    }
 
     let cancelled = false
     let createdModel: monaco.editor.ITextModel | null = null
@@ -580,6 +563,7 @@ export default function EditorPanel({
         retainModel(filePath)
         modelRetained = true
         editor.setModel(cached)
+        applyPendingReveal()
       } else {
         const language = detectLanguage(filePath)
         window.electronAPI
@@ -594,6 +578,7 @@ export default function EditorPanel({
             retainModel(filePath)
             modelRetained = true
             editor.setModel(model)
+            applyPendingReveal()
           })
           .catch((err) => {
             if (cancelled) return
@@ -742,8 +727,9 @@ export default function EditorPanel({
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
-    const unsub = subscribeTheme(() => {
-      monaco.editor.setTheme(resolvedMonacoTheme())
+    const unsub = subscribeTheme((t) => {
+      applyMonacoTheme(t)
+      monaco.editor.setTheme(CATE_MONACO_THEME)
     })
     return unsub
   }, [])
@@ -756,11 +742,11 @@ export default function EditorPanel({
     <div className="w-full h-full relative">
       {isMarkdown && !diffMode && (
         <button
-          onClick={() => setMarkdownPreview((v) => !v)}
+          onClick={() => setMarkdownPreview(!markdownPreview)}
           className={`absolute top-2 right-5 z-10 px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
             markdownPreview
-              ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30'
-              : 'bg-neutral-200/80 dark:bg-neutral-700/80 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-300 dark:hover:bg-neutral-600'
+              ? 'bg-agent/15 text-agent hover:bg-agent/25'
+              : 'bg-surface-3 text-secondary hover:bg-surface-4 hover:text-primary'
           }`}
           title={markdownPreview ? 'Show source' : 'Preview markdown'}
         >
@@ -787,8 +773,8 @@ function MarkdownPreview({ content }: { content: string }) {
           remarkPlugins={[remarkGfm]}
           components={{
             p: ({ children }) => <p className="leading-relaxed my-2">{children}</p>,
-            h1: ({ children }) => <h1 className="text-xl font-bold text-primary mt-6 mb-2 pb-1 border-b border-neutral-300 dark:border-neutral-700">{children}</h1>,
-            h2: ({ children }) => <h2 className="text-lg font-semibold text-primary mt-5 mb-2 pb-1 border-b border-neutral-300 dark:border-neutral-700">{children}</h2>,
+            h1: ({ children }) => <h1 className="text-xl font-bold text-primary mt-6 mb-2 pb-1 border-b border-strong">{children}</h1>,
+            h2: ({ children }) => <h2 className="text-lg font-semibold text-primary mt-5 mb-2 pb-1 border-b border-strong">{children}</h2>,
             h3: ({ children }) => <h3 className="text-[15px] font-semibold text-primary mt-4 mb-1">{children}</h3>,
             h4: ({ children }) => <h4 className="text-[14px] font-semibold text-primary mt-3 mb-1">{children}</h4>,
             ul: ({ children }) => <ul className="list-disc pl-5 space-y-1">{children}</ul>,
@@ -796,16 +782,16 @@ function MarkdownPreview({ content }: { content: string }) {
             li: ({ children }) => <li className="leading-relaxed">{children}</li>,
             a: ({ href, children }) => (
               <a href={href} target="_blank" rel="noreferrer"
-                 className="text-blue-500 dark:text-blue-400 underline decoration-blue-500/30 hover:decoration-blue-500">
+                 className="text-agent underline decoration-agent/30 hover:decoration-agent">
                 {children}
               </a>
             ),
             blockquote: ({ children }) => (
-              <blockquote className="border-l-3 border-neutral-400 dark:border-neutral-600 pl-3 text-primary/80 italic my-2">
+              <blockquote className="border-l-3 border-strong pl-3 text-secondary italic my-2">
                 {children}
               </blockquote>
             ),
-            hr: () => <hr className="border-neutral-300 dark:border-neutral-700 my-4" />,
+            hr: () => <hr className="border-subtle my-4" />,
             strong: ({ children }) => <strong className="font-semibold text-primary">{children}</strong>,
             em: ({ children }) => <em className="italic">{children}</em>,
             code: ({ className, children, ...props }) => {
@@ -818,26 +804,26 @@ function MarkdownPreview({ content }: { content: string }) {
                 )
               }
               return (
-                <code className="font-mono text-[12px] px-1 py-[1px] rounded bg-neutral-200 dark:bg-neutral-800 text-pink-600 dark:text-pink-400" {...props}>
+                <code className="font-mono text-[12px] px-1 py-[1px] rounded bg-hover-strong text-primary" {...props}>
                   {children}
                 </code>
               )
             },
             pre: ({ children }) => (
-              <pre className="rounded-md bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 px-4 py-3 overflow-x-auto text-[12px] leading-snug my-3">
+              <pre className="rounded-md bg-surface-3 border border-subtle px-4 py-3 overflow-x-auto text-[12px] leading-snug my-3">
                 {children}
               </pre>
             ),
             table: ({ children }) => (
               <div className="overflow-x-auto my-3">
-                <table className="min-w-full text-[12px] border border-neutral-200 dark:border-neutral-700 rounded-md">{children}</table>
+                <table className="min-w-full text-[12px] border border-subtle rounded-md">{children}</table>
               </div>
             ),
             th: ({ children }) => (
-              <th className="text-left px-3 py-1.5 border-b border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 font-medium">{children}</th>
+              <th className="text-left px-3 py-1.5 border-b border-subtle bg-surface-3 text-primary font-medium">{children}</th>
             ),
             td: ({ children }) => (
-              <td className="px-3 py-1.5 border-b border-neutral-100 dark:border-neutral-800 align-top">{children}</td>
+              <td className="px-3 py-1.5 border-b border-subtle align-top">{children}</td>
             ),
             img: ({ src, alt }) => (
               <img src={src} alt={alt ?? ''} className="max-w-full rounded-md my-2" />

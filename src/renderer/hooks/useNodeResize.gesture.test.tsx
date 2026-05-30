@@ -83,7 +83,7 @@ function ResizeProbe({
   panelType: PanelType
   store: StoreApi<CanvasStore>
 }) {
-  const { handleResizeStart } = useNodeResize(nodeId, panelType, 1, store)
+  const { handleResizeStart } = useNodeResize(nodeId, panelType, store)
   return <div data-testid="handle" onMouseDown={(e) => handleResizeStart(e, edge)} />
 }
 

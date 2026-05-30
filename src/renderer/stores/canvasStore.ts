@@ -28,6 +28,7 @@ import {
 } from '../canvas/layoutEngine'
 import { viewToCanvas as viewToCanvasCoords } from '../lib/coordinates'
 import { REGION_FILL_COLORS } from '../../shared/colors'
+import { perfCount } from '../lib/perf/perfClient'
 
 // -----------------------------------------------------------------------------
 // Store interface
@@ -105,7 +106,11 @@ export interface CanvasStoreActions {
   // Focus and center viewport on a node
   focusAndCenter: (nodeId: CanvasNodeId) => void
 
+  // Move focus to the spatially-nearest node in a direction, centering it
+  navigateDirection: (dir: 'up' | 'down' | 'left' | 'right') => void
+
   zoomToFit: () => void
+  zoomToSelection: () => void
 
   // Z-order management
   moveToFront: (nodeId: CanvasNodeId) => void
@@ -757,6 +762,53 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
     set(newState)
   },
 
+  navigateDirection(dir) {
+    const state = get()
+    const nodeList = Object.values(state.nodes)
+    if (nodeList.length === 0) return
+
+    // Reference center: focused node's center, else the viewport center.
+    const current = state.focusedNodeId ? state.nodes[state.focusedNodeId] : null
+    let refX: number
+    let refY: number
+    if (current) {
+      refX = current.origin.x + current.size.width / 2
+      refY = current.origin.y + current.size.height / 2
+    } else {
+      const cs = state.containerSize
+      const center = get().viewToCanvas({ x: cs.width / 2, y: cs.height / 2 })
+      refX = center.x
+      refY = center.y
+    }
+
+    let best: CanvasNodeState | null = null
+    let bestScore = Infinity
+    for (const n of nodeList) {
+      if (current && n.id === current.id) continue
+      const dx = n.origin.x + n.size.width / 2 - refX
+      const dy = n.origin.y + n.size.height / 2 - refY
+      const adx = Math.abs(dx)
+      const ady = Math.abs(dy)
+
+      // Directional cone: the candidate must lie in the half-plane AND the move
+      // axis must dominate, so we don't jump to a node that's mostly sideways.
+      let inCone: boolean
+      let score: number
+      if (dir === 'left') { inCone = dx < 0 && adx >= ady; score = adx + 2 * ady }
+      else if (dir === 'right') { inCone = dx > 0 && adx >= ady; score = adx + 2 * ady }
+      else if (dir === 'up') { inCone = dy < 0 && ady >= adx; score = ady + 2 * adx }
+      else { inCone = dy > 0 && ady >= adx; score = ady + 2 * adx }
+      if (!inCone) continue
+
+      if (score < bestScore) {
+        bestScore = score
+        best = n
+      }
+    }
+
+    if (best) get().focusAndCenter(best.id)
+  },
+
   zoomToFit() {
     const state = get()
     const nodeList = Object.values(state.nodes)
@@ -773,6 +825,44 @@ export function createCanvasStore(): UseBoundStore<StoreApi<CanvasStore>> {
     const contentW = maxX - minX + padding * 2
     const contentH = maxY - minY + padding * 2
     const zoom = Math.min(Math.max(Math.min(cs.width / contentW, cs.height / contentH), ZOOM_MIN), ZOOM_MAX)
+
+    set({
+      zoomLevel: zoom,
+      viewportOffset: {
+        x: (cs.width - contentW * zoom) / 2 - (minX - padding) * zoom,
+        y: (cs.height - contentH * zoom) / 2 - (minY - padding) * zoom,
+      },
+    })
+  },
+
+  zoomToSelection() {
+    const state = get()
+    const cs = state.containerSize
+    if (cs.width === 0 || cs.height === 0) return
+
+    // Target the selection, else the focused node, else fall back to fit-all.
+    let target = Object.values(state.nodes).filter((n) => state.selectedNodeIds.has(n.id))
+    if (target.length === 0) {
+      const focused = state.focusedNodeId ? state.nodes[state.focusedNodeId] : null
+      if (focused) target = [focused]
+    }
+    if (target.length === 0) {
+      get().zoomToFit()
+      return
+    }
+
+    const minX = Math.min(...target.map(n => n.origin.x))
+    const minY = Math.min(...target.map(n => n.origin.y))
+    const maxX = Math.max(...target.map(n => n.origin.x + n.size.width))
+    const maxY = Math.max(...target.map(n => n.origin.y + n.size.height))
+
+    const padding = 60
+    const contentW = maxX - minX + padding * 2
+    const contentH = maxY - minY + padding * 2
+    // Cap a single-node target so we don't over-zoom a small panel.
+    const fitZoom = Math.min(cs.width / contentW, cs.height / contentH)
+    const maxZoom = target.length === 1 ? Math.min(ZOOM_MAX, 1.5) : ZOOM_MAX
+    const zoom = Math.min(Math.max(fitZoom, ZOOM_MIN), maxZoom)
 
     set({
       zoomLevel: zoom,
@@ -1414,16 +1504,34 @@ export function useNodeIds(store?: UseBoundStore<StoreApi<CanvasStore>>): string
  * This is the primary lever for reducing memory/CPU when many terminals or
  * editors are open on a canvas — off-screen nodes don't mount at all.
  */
+// z-order-sorted node list, cached by the `nodes` object identity. The cull
+// selector below runs on EVERY store update — including every pan/zoom frame,
+// where only viewportOffset/zoomLevel changed and `nodes` is the same object.
+// Without this cache that path re-allocated Object.values() and re-sorted the
+// whole node set 60×/s during a drag. zustand replaces `nodes` immutably on any
+// real node change, so identity equality is a safe cache key; a WeakMap also
+// keeps it correct across multiple per-panel canvas stores (and never leaks).
+const sortedNodeCache = new WeakMap<object, CanvasNodeState[]>()
+function sortedNodesByZOrder(nodes: Record<CanvasNodeId, CanvasNodeState>): CanvasNodeState[] {
+  const cached = sortedNodeCache.get(nodes)
+  if (cached) return cached
+  perfCount('canvasCullSort')
+  const sorted = Object.values(nodes).sort((a, b) => a.zOrder - b.zOrder)
+  sortedNodeCache.set(nodes, sorted)
+  return sorted
+}
+
 export function useVisibleNodeIds(store?: UseBoundStore<StoreApi<CanvasStore>>): string[] {
   return useStoreWithEqualityFn(
     store ?? useCanvasStore,
     (s) => {
+      perfCount('canvasCullEval')
       const { nodes, viewportOffset, zoomLevel, containerSize, focusedNodeId } = s
       const z = zoomLevel
       const cw = containerSize.width
       const ch = containerSize.height
 
-      const sorted = Object.values(nodes).sort((a, b) => a.zOrder - b.zOrder)
+      const sorted = sortedNodesByZOrder(nodes)
 
       // Before the container size is known, render everything — prevents an
       // initial flash where no nodes appear while the ResizeObserver settles.

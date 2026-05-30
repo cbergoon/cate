@@ -8,6 +8,7 @@
 import { useAppStore } from '../stores/appStore'
 import { getOrCreateCanvasStoreForPanel } from '../stores/canvasStore'
 import { useDragStore } from '../drag/store'
+import { terminalRegistry } from './terminalRegistry'
 import type { Point } from '../../shared/types'
 
 declare global {
@@ -16,11 +17,16 @@ declare global {
       ready: true
       activeCanvasPanelId(): string | null
       createTerminal(point: Point): string
+      createEditor(point: Point): string
       createCanvasPanel(point: Point): string
       nodes(): { id: string; panelId: string; origin: Point; size: { width: number; height: number } }[]
       zoom(): number
       setZoom(z: number): void
       resetViewport(): void
+      /** Resolve the PTY id backing a terminal node (null until the PTY spawns). */
+      terminalPtyId(nodeId: string): string | null
+      /** Write raw data to a terminal node's PTY (e.g. a flooding command). */
+      writeTerminal(nodeId: string, data: string): boolean
       dragSnapshot(): {
         isDragging: boolean
         sourceKind: string | null
@@ -49,6 +55,17 @@ export function installE2EHarness(): void {
   const createTerminal = (point: Point): string => {
     const wsId = useAppStore.getState().selectedWorkspaceId
     const panelId = useAppStore.getState().createTerminal(wsId, undefined, point)
+    const cs = activeCanvasStore()
+    if (!cs) return panelId
+    for (const n of Object.values(cs.getState().nodes)) {
+      if (n.panelId === panelId) return n.id
+    }
+    return panelId
+  }
+
+  const createEditor = (point: Point): string => {
+    const wsId = useAppStore.getState().selectedWorkspaceId
+    const panelId = useAppStore.getState().createEditor(wsId, undefined, point)
     const cs = activeCanvasStore()
     if (!cs) return panelId
     for (const n of Object.values(cs.getState().nodes)) {
@@ -87,6 +104,21 @@ export function installE2EHarness(): void {
     activeCanvasStore()?.setState({ viewportOffset: { x: 0, y: 0 } })
   }
 
+  const terminalPtyId = (nodeId: string): string | null => {
+    const cs = activeCanvasStore()
+    if (!cs) return null
+    const node = cs.getState().nodes[nodeId]
+    const panelId = node?.panelId ?? nodeId
+    return terminalRegistry.getEntry(panelId)?.ptyId || null
+  }
+
+  const writeTerminal = (nodeId: string, data: string): boolean => {
+    const ptyId = terminalPtyId(nodeId)
+    if (!ptyId) return false
+    void window.electronAPI?.terminalWrite(ptyId, data)
+    return true
+  }
+
   const dragSnapshot = () => {
     const s = useDragStore.getState()
     return {
@@ -102,11 +134,14 @@ export function installE2EHarness(): void {
     ready: true,
     activeCanvasPanelId,
     createTerminal,
+    createEditor,
     createCanvasPanel,
     nodes,
     zoom,
     setZoom,
     resetViewport,
+    terminalPtyId,
+    writeTerminal,
     dragSnapshot,
   }
 }

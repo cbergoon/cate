@@ -14,6 +14,7 @@ import { PANEL_REGISTRY, getPanelDef } from '../panels/registry'
 import { useAppStore } from '../stores/appStore'
 import { useAgentInfoByPanel } from '../hooks/useAgentPanelInfo'
 import { worktreeTitleStyle } from '../lib/worktreeTitleStyle'
+import { isMiddleClick } from '../lib/mouse'
 
 const AWAIT_COLOR = '#c08a5a'
 
@@ -187,12 +188,26 @@ export function DockTabBar(props: DockTabBarProps) {
             className={`
               group relative flex items-center gap-1.5 whitespace-nowrap
               cursor-grab select-none min-w-0 flex-1 max-w-[200px]
-              border-r border-white/5
               ${compact ? 'pl-2 pr-1.5 text-[11px]' : 'pl-3 pr-2 text-xs'}
-              ${isActive ? 'text-primary font-medium' : 'text-secondary hover:text-primary'}
+              ${isActive ? 'text-secondary font-medium' : 'text-muted hover:text-secondary'}
             `}
             onClick={() => onTabClick(i)}
-            onMouseDown={(e) => onTabMouseDown(e, panelId)}
+            onMouseDown={(e) => {
+              // Middle button closes the tab on auxclick (below). Suppress the
+              // native middle-click autoscroll and don't start a tab drag.
+              if (isMiddleClick(e)) { e.preventDefault(); return }
+              onTabMouseDown(e, panelId)
+            }}
+            onAuxClick={(e) => {
+              // Middle-click closes the tab — works for both the top dock and
+              // canvas-node mini-docks (both render TabPills with onClosePanel).
+              // Guarded to the middle button so right-click still opens the menu.
+              if (isMiddleClick(e) && onClosePanel) {
+                e.preventDefault()
+                e.stopPropagation()
+                onClosePanel(panelId)
+              }
+            }}
             onContextMenu={(e) => onTabContextMenu(e, panelId)}
             onPointerEnter={() => {
               if (isActive) return
@@ -217,12 +232,6 @@ export function DockTabBar(props: DockTabBarProps) {
             } as React.CSSProperties}
             title={getPanelTitle(panelId)}
           >
-            {isActive && (
-              <span
-                className="absolute left-0 right-0 top-0 h-[2px]"
-                style={{ backgroundColor: 'var(--workspace-accent, var(--node-chrome-accent, #3b82f6))' }}
-              />
-            )}
             <span
               className={`shrink-0 ${isActive ? PANEL_TYPE_TINT[panelType] : 'text-muted'}`}
             >
