@@ -268,9 +268,10 @@ export function useShortcuts(): void {
         }
       }
 
-      // Delete/Backspace — delete selection
-      // Skip when Cmd is held so Cmd+Backspace routes to the `deleteNode`
-      // shortcut below (which deletes the currently focused panel).
+      // Delete/Backspace — delete selection.
+      // Skip when Cmd is held: Cmd+Backspace is left to the OS/text "delete to
+      // line start" behavior and is intentionally not bound to a canvas action
+      // by default (see deleteNode in DEFAULT_SHORTCUTS).
       if ((e.key === 'Delete' || e.key === 'Backspace') && !e.metaKey) {
         if (terminalHasFocus) return
         const state = canvasStore()
@@ -322,11 +323,11 @@ export function useShortcuts(): void {
       if (action === 'undo' || action === 'redo') {
         if (!terminalHasFocus && isTextSurfaceFocused()) return
       }
-      // Cmd+Backspace (deleteNode): a focused terminal must keep the chord so the
-      // shell can delete-to-line-start (translated to Ctrl+U in terminalRegistry),
-      // and a focused text editor must keep it to delete text. Panels stay
-      // closable via Cmd+W. Without this, the canvas would close the panel and
-      // the keystroke would never reach the shell (issue #172).
+      // deleteNode is unbound by default (Cmd+Backspace is left to the OS/text
+      // "delete to line start" behavior — issue #172). If a user rebinds it to a
+      // chord that a terminal or text editor also uses, keep deferring to them so
+      // the keystroke reaches the shell / edits text rather than closing the
+      // panel. Panels stay closable via Cmd+W regardless.
       if (action === 'deleteNode') {
         if (terminalHasFocus || isTextSurfaceFocused()) return
       }

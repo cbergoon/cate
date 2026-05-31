@@ -5,7 +5,7 @@
 
 import { create } from 'zustand'
 import type { ShortcutAction, StoredShortcut } from '../../shared/types'
-import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS } from '../../shared/types'
+import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, isUnboundShortcut } from '../../shared/types'
 
 // -----------------------------------------------------------------------------
 // Modifier state
@@ -106,6 +106,8 @@ export const useShortcutStore = create<ShortcutStore>((set, get) => ({
 
     for (const action of SHORTCUT_ACTIONS) {
       const stored = shortcuts[action]
+      // An unbound shortcut (empty key) never matches a keypress.
+      if (isUnboundShortcut(stored)) continue
       if (
         stored.key === eventKey &&
         stored.command === eventMods.command &&

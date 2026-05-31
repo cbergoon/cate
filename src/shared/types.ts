@@ -390,8 +390,15 @@ export function storedShortcut(
   }
 }
 
+/** A shortcut with an empty key is unbound and never matches a keypress. */
+export function isUnboundShortcut(s: StoredShortcut): boolean {
+  return !s.key
+}
+
 /** Mirrors StoredShortcut.displayString from Swift. */
 export function displayString(s: StoredShortcut): string {
+  // An empty key means the action is unbound (see isUnboundShortcut).
+  if (!s.key) return 'None'
   const parts: string[] = []
   if (s.control) parts.push('\u2303') // ⌃
   if (s.option) parts.push('\u2325')  // ⌥
@@ -532,7 +539,11 @@ export const DEFAULT_SHORTCUTS: Record<ShortcutAction, StoredShortcut> = {
   autoLayout: storedShortcut('l', { command: true, shift: true }),
   undo: storedShortcut('z', { command: true }),
   redo: storedShortcut('z', { command: true, shift: true }),
-  deleteNode: storedShortcut('Backspace', { command: true }),
+  // Unbound by default: Cmd+Backspace is reserved for the OS/text "delete to
+  // line start" behavior so it isn't stolen inside editors, terminals, or web
+  // inputs. The focused panel stays closable via Cmd+W (closePanel), and users
+  // can still bind a key to this action in Settings if they want it.
+  deleteNode: storedShortcut(''),
   toolSelect: storedShortcut('v'),
   toolHand: storedShortcut('h'),
   navigateUp: storedShortcut('↑'),
