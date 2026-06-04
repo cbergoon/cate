@@ -564,10 +564,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
         log.error('Failed to restore dock state for workspace:', error)
       }
 
-      // Check for deferred restore (lazy workspace loading)
+      // Check for deferred restore (lazy workspace loading). A deferred restore
+      // rebuilds the canvas directly into the live canvas STORE (via
+      // restoreSession), but leaves this workspace's `canvasNodes` record empty
+      // until the next autosave syncs it. Track that so the re-resolve block
+      // below doesn't clobber the just-restored store with the empty record.
+      let didDeferredRestore = false
       try {
         if (deferredSnapshots.has(id)) {
           await restoreDeferredWorkspace(id, canvasOps?.storeApi)
+          didDeferredRestore = true
         }
       } catch (error) {
         log.error('Failed to restore deferred workspace:', error)
@@ -578,28 +584,38 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // or where a restored dock layout references no canvas-type panel.
       get().ensureCenterCanvas(id)
 
-      // ensureCenterCanvas may have just minted a brand-new canvas panel (empty
-      // or freshly created workspace). Its store can momentarily alias the
-      // legacy singleton, which still holds the previous workspace's nodes — so
-      // the freshly mounted CanvasPanel briefly renders a stale node before it
-      // settles, visible as an empty note blinking in then vanishing. Re-resolve
-      // the now-authoritative canvas store and load this workspace's state into
-      // it to clear any leftover nodes immediately.
-      const finalCanvasPanelId = getWorkspaceCanvasPanelId(id)
-      if (finalCanvasPanelId && finalCanvasPanelId !== canvasPanelId) {
-        setActiveCanvasPanelId(finalCanvasPanelId)
-        const wsFinal = get().workspaces.find((w) => w.id === id)
-        if (wsFinal) {
-          try {
-            getWorkspaceCanvasStore(id)?.getState().loadWorkspaceCanvas(
-              wsFinal.canvasNodes,
-              wsFinal.viewportOffset,
-              wsFinal.zoomLevel,
-              wsFinal.focusedNodeId,
-              wsFinal.regions,
-            )
-          } catch (error) {
-            log.error('Failed to load canvas for workspace:', error)
+      if (didDeferredRestore) {
+        // The canvas store is already authoritative (restoreSession populated
+        // it). Do NOT reload from `canvasNodes` — it's still empty and would
+        // wipe the restored nodes, leaving a blank canvas while the panels linger
+        // in the sidebar (and the next save would then persist the empty canvas).
+        // Instead, sync the live store back into the workspace record so the
+        // persisted state and future saves stay consistent.
+        get().syncCanvasToWorkspace(id)
+      } else {
+        // ensureCenterCanvas may have just minted a brand-new canvas panel (empty
+        // or freshly created workspace). Its store can momentarily alias the
+        // legacy singleton, which still holds the previous workspace's nodes — so
+        // the freshly mounted CanvasPanel briefly renders a stale node before it
+        // settles, visible as an empty note blinking in then vanishing. Re-resolve
+        // the now-authoritative canvas store and load this workspace's state into
+        // it to clear any leftover nodes immediately.
+        const finalCanvasPanelId = getWorkspaceCanvasPanelId(id)
+        if (finalCanvasPanelId && finalCanvasPanelId !== canvasPanelId) {
+          setActiveCanvasPanelId(finalCanvasPanelId)
+          const wsFinal = get().workspaces.find((w) => w.id === id)
+          if (wsFinal) {
+            try {
+              getWorkspaceCanvasStore(id)?.getState().loadWorkspaceCanvas(
+                wsFinal.canvasNodes,
+                wsFinal.viewportOffset,
+                wsFinal.zoomLevel,
+                wsFinal.focusedNodeId,
+                wsFinal.regions,
+              )
+            } catch (error) {
+              log.error('Failed to load canvas for workspace:', error)
+            }
           }
         }
       }

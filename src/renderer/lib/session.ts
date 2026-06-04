@@ -8,6 +8,7 @@ import {
   useAppStore,
   ensureCanvasOpsForPanel,
   getWorkspaceCanvasStore,
+  getWorkspaceCanvasPanelId,
   setActiveCanvasPanelId,
 } from '../stores/appStore'
 import type { StoreApi } from 'zustand'
@@ -84,28 +85,6 @@ function restoreDockPanelsForWorkspace(workspaceId: string, snapshot: SessionSna
     }
   }
   return restoredCount
-}
-
-function resolveSnapshotCanvasPanelId(snapshot: SessionSnapshot): string | null {
-  if (snapshot.dockState) {
-    const centerPanelIds = collectPanelIdsFromDockState({
-      center: snapshot.dockState.zones.center,
-      left: { position: 'left', visible: false, size: 0, layout: null },
-      right: { position: 'right', visible: false, size: 0, layout: null },
-      bottom: { position: 'bottom', visible: false, size: 0, layout: null },
-    })
-    for (const panelId of centerPanelIds) {
-      if (!snapshot.dockPanels || snapshot.dockPanels[panelId]?.type === 'canvas') return panelId
-    }
-
-    const dockPanelIds = collectPanelIdsFromDockState(snapshot.dockState.zones)
-    for (const panelId of dockPanelIds) {
-      if (!snapshot.dockPanels || snapshot.dockPanels[panelId]?.type === 'canvas') return panelId
-    }
-  }
-
-  const canvasPanel = Object.values(snapshot.dockPanels ?? {}).find((panel) => panel.type === 'canvas')
-  return canvasPanel?.id ?? null
 }
 
 // -----------------------------------------------------------------------------
@@ -538,6 +517,56 @@ export async function reloadActiveWorkspaceFromDisk(): Promise<void> {
   log.info('[session] reloaded workspace %s from disk (%d nodes)', wsId, snapshot.nodes.length)
 }
 
+/**
+ * When a project is opened at runtime (folder picked / recent project), restore
+ * its saved `.cate/workspace.json` layout into the workspace instead of leaving
+ * the canvas empty. Without this, opening a project that already has saved state
+ * shows a blank canvas, and the autosave then writes that blank layout back over
+ * the real file — destroying it. Loading here also seeds main's external-edit
+ * hash guard for the project, so later autosaves don't falsely prompt to reload.
+ *
+ * Only restores into an empty workspace (so it never discards a canvas the user
+ * already built) and returns whether a saved layout was applied — the caller
+ * uses that to skip spawning a default welcome terminal on top of it.
+ */
+export async function restoreProjectIfSaved(wsId: string, rootPath: string): Promise<boolean> {
+  type LoadedProjectState = { workspace: ProjectWorkspaceFile; session: ProjectSessionFile | null } | null
+  let projectState: LoadedProjectState = null
+  try {
+    projectState = (await window.electronAPI.projectStateLoad(rootPath)) as LoadedProjectState
+  } catch (err) {
+    log.warn('[session] project load on open failed for %s: %s', rootPath, err)
+    return false
+  }
+  const ws = projectState?.workspace
+  if (!ws) return false
+
+  const hasSavedContent =
+    (ws.canvas?.nodes?.length ?? 0) > 0 ||
+    (ws.dockPanels != null && Object.keys(ws.dockPanels).length > 0)
+  if (!hasSavedContent) return false
+
+  const appStore = useAppStore.getState()
+  const target = appStore.workspaces.find((w) => w.id === wsId)
+  if (!target) return false
+  // Don't clobber a canvas the user already populated before picking the folder.
+  if (Object.keys(target.canvasNodes ?? {}).length > 0) return false
+
+  // restoreSession targets the selected workspace, so make this one active first.
+  if (appStore.selectedWorkspaceId !== wsId) {
+    await appStore.selectWorkspace(wsId)
+  }
+
+  const snapshot = projectFilesToSnapshot(ws, projectState!.session, rootPath)
+  if (ws.name) appStore.renameWorkspace(wsId, ws.name)
+  if (typeof ws.color === 'string') appStore.setWorkspaceColor(wsId, ws.color)
+
+  appStore.closeAllPanels(wsId)
+  await restoreSession(snapshot)
+  log.info('[session] opened project %s with saved layout (%d nodes)', rootPath, snapshot.nodes.length)
+  return true
+}
+
 // -----------------------------------------------------------------------------
 // Restore
 // -----------------------------------------------------------------------------
@@ -555,17 +584,44 @@ export async function restoreSession(snapshot: SessionSnapshot, canvasStoreApi?:
     log.debug(`[session] restored ${restoredDockPanelCount} dock-zone panels for workspace ${wsId}`)
   }
 
-  const preferredCanvasPanelId = resolveSnapshotCanvasPanelId(snapshot)
-  if (preferredCanvasPanelId) {
-    ensureCanvasOpsForPanel(preferredCanvasPanelId)
-    setActiveCanvasPanelId(preferredCanvasPanelId)
+  // Restore the window dock layout and guarantee a center canvas panel BEFORE
+  // creating any canvas nodes. Node creation routes into "the workspace's center
+  // canvas store", and that store is keyed by the center canvas panel id
+  // resolved from the LIVE dock. If we created nodes first — resolving the
+  // target canvas from the snapshot — and the live dock then settled on a
+  // different canvas panel, the nodes would live in one store while the rendered
+  // CanvasPanel (and saveSession) read another. The canvas then comes up blank
+  // even though the panels exist and are listed in the sidebar. Establishing the
+  // dock up front makes creation, rendering, and saving resolve the same store.
+  //
+  // This covers two real divergences: (a) the saved canvas panel id is present
+  // in dockState but missing from dockPanels, so ensureCenterCanvas mints a
+  // fresh canvas with a new id; and (b) restoring into a workspace that already
+  // has a different canvas mounted (the open-project path), where the snapshot's
+  // canvas id != the live one.
+  if (snapshot.dockState) {
+    try {
+      useDockStore.getState().restoreSnapshot(snapshot.dockState)
+      log.debug(`[session] dock state restored for workspace ${wsId}`)
+    } catch (err) {
+      log.warn('[session] failed to restore dock state:', err)
+    }
+  }
+  appStore.ensureCenterCanvas(wsId)
+
+  // Resolve the canvas panel the live dock actually shows — the same one
+  // CanvasPanel renders and saveSession reads back — and route node creation to
+  // it. Fall back to the passed-in store only if the workspace somehow has no
+  // canvas panel at all.
+  const canvasPanelId = getWorkspaceCanvasPanelId(wsId)
+  if (canvasPanelId) {
+    ensureCanvasOpsForPanel(canvasPanelId)
+    setActiveCanvasPanelId(canvasPanelId)
   }
 
-  // Get the workspace's primary canvas store. Fall back to the passed-in store
-  // only when we have no saved canvas panel to target yet.
   const getCanvasState = () =>
-    (preferredCanvasPanelId
-      ? getOrCreateCanvasStoreForPanel(preferredCanvasPanelId).getState()
+    (canvasPanelId
+      ? getOrCreateCanvasStoreForPanel(canvasPanelId).getState()
       : getWorkspaceCanvasStore(wsId)?.getState() ?? canvasStoreApi?.getState()) ?? null
 
   log.debug(`[session] restoring workspace ${wsId}: ${snapshot.nodes.length} nodes`)
@@ -695,20 +751,8 @@ export async function restoreSession(snapshot: SessionSnapshot, canvasStoreApi?:
     canvasState.setViewportOffset(snapshot.viewportOffset)
   }
 
-  // Restore dock state if present
-  if (snapshot.dockState) {
-    try {
-      useDockStore.getState().restoreSnapshot(snapshot.dockState)
-      log.debug(`[session] dock state restored for workspace ${wsId}`)
-    } catch (err) {
-      log.warn('[session] failed to restore dock state:', err)
-    }
-  }
-
-  // Safety net: guarantee the center zone has a canvas panel after restore.
-  // Without this, a session saved in a bad state (or one whose center layout
-  // references non-canvas panels only) would come up as a blank center pane.
-  appStore.ensureCenterCanvas(wsId)
+  // Dock state + center canvas were already restored up front (see above) so
+  // node creation targeted the live center canvas store.
 
   log.debug(`[session] workspace ${wsId} restored in ${(performance.now() - t0).toFixed(1)}ms`)
 }

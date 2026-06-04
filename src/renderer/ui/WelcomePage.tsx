@@ -29,21 +29,26 @@ export default function WelcomePage({ workspaceId }: { workspaceId: string }) {
     window.electronAPI.recentProjectsGet().then(setRecentProjects).catch((err) => log.warn('[welcome] Failed to load recent projects:', err))
   }, [])
 
+  const openProject = useCallback(async (path: string) => {
+    const app = useAppStore.getState()
+    const ok = await app.setWorkspaceRootPath(workspaceId, path)
+    if (!ok) return
+    // Restore the project's saved canvas if it has one; only fall back to a
+    // fresh welcome terminal when there's nothing to restore.
+    const { restoreProjectIfSaved } = await import('../lib/session')
+    const restored = await restoreProjectIfSaved(workspaceId, path).catch(() => false)
+    if (!restored) app.createTerminal(workspaceId)
+  }, [workspaceId])
+
   const openFolder = useCallback(async () => {
     const path = await window.electronAPI.openFolderDialog()
     if (!path) return
-    const app = useAppStore.getState()
-    const ok = await app.setWorkspaceRootPath(workspaceId, path)
-    if (ok) app.createTerminal(workspaceId)
-  }, [workspaceId])
+    await openProject(path)
+  }, [openProject])
 
   const openRecentProject = useCallback(
-    async (path: string) => {
-      const app = useAppStore.getState()
-      const ok = await app.setWorkspaceRootPath(workspaceId, path)
-      if (ok) app.createTerminal(workspaceId)
-    },
-    [workspaceId],
+    (path: string) => openProject(path),
+    [openProject],
   )
 
   const newTerminal = useCallback(async () => {

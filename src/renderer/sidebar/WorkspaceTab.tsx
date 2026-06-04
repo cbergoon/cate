@@ -325,7 +325,13 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
         break
       case 'select-folder': {
         const path = await window.electronAPI.openFolderDialog()
-        if (path) app.setWorkspaceRootPath(workspace.id, path)
+        if (path) {
+          const ok = await app.setWorkspaceRootPath(workspace.id, path)
+          if (ok) {
+            const { restoreProjectIfSaved } = await import('../lib/session')
+            await restoreProjectIfSaved(workspace.id, path).catch(() => false)
+          }
+        }
         break
       }
       case 'copy-cwd': {
@@ -399,7 +405,11 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
       if (!isSelected) onClick()
       const path = await window.electronAPI.openFolderDialog()
       if (path) {
-        useAppStore.getState().setWorkspaceRootPath(workspace.id, path)
+        const ok = await useAppStore.getState().setWorkspaceRootPath(workspace.id, path)
+        if (ok) {
+          const { restoreProjectIfSaved } = await import('../lib/session')
+          await restoreProjectIfSaved(workspace.id, path).catch(() => false)
+        }
       }
     }
     return (

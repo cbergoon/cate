@@ -1154,6 +1154,38 @@ if (process.env.CATE_E2E === '1') {
 }
 
 // ---------------------------------------------------------------------------
+// Single-instance lock
+//
+// Session state (.cate/workspace.json + recentProjects) is owned by a single
+// running process, which keeps an in-memory hash of what it last wrote to guard
+// against external edits. A second concurrent instance writes the same files
+// with its own guard, so the two clobber each other's layout and trip spurious
+// "workspace changed on disk" reload prompts. This is easy to hit by quitting
+// and immediately relaunching: the old instance's async quit-flush + will-quit
+// sync save can still be running when the new one boots. Take an exclusive lock
+// and, if we don't get it, hand off to the existing instance instead of running
+// a second writer. Packaged builds only: dev (electron-vite) and E2E manage the
+// process lifecycle themselves and a stale lock would break their relaunches.
+if (app.isPackaged && process.env.CATE_E2E !== '1' && !app.requestSingleInstanceLock()) {
+  log.info('Another Cate instance is running — focusing it and exiting this one')
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    // A second launch was redirected here. Surface the existing main window.
+    const win = findMainWindow()
+    if (win) {
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+    }
+    // Forward any folder/file path passed on the relaunch argv (Windows/Linux
+    // route "Open With" through argv rather than the macOS open-file event).
+    const pathArg = argv.find((a) => !a.startsWith('-') && a !== process.execPath)
+    if (pathArg) deliverOpenPath(pathArg)
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Dock / "Open With..." folder opens (macOS `open-file` event)
 //
 // Fires when the user drops a folder onto the dock icon or opens one with
